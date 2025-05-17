@@ -676,51 +676,38 @@ export class SimplePool {
     // Broadcast the event to all subscription callbacks
     this.broadcastEvent(event);
     
-    // If we have no connected relays, try to reconnect immediately
-    if (this.connectedRelays.size === 0) {
-      logger.warn('No connected relays to publish to, attempting emergency reconnection...');
-      
-      // Try to reconnect to all relays simultaneously
-      const connectPromises = relays.map(async (relay) => {
-        try {
-          return new Promise<boolean>((resolve) => {
-            const ws = new WebSocket(relay);
+    // CRITICAL FIX: Force broadcast to ALL relays regardless of connection status
+    // This ensures events propagate even if relay connections aren't fully established
+    DEFAULT_RELAYS.forEach(relay => {
+      try {
+        const ws = new WebSocket(relay);
+        ws.onopen = () => {
+          try {
+            // Format as proper Nostr relay message
+            ws.send(JSON.stringify(["EVENT", event]));
+            logger.debug(`Force-sent event to ${relay}`);
             
-            // Set connection timeout
-            const timeout = setTimeout(() => {
-              ws.close();
-              resolve(false);
-            }, 5000);
-            
-            ws.onopen = () => {
-              clearTimeout(timeout);
+            // Add relay to connected set if not already there
+            if (!this.connectedRelays.has(relay)) {
               this.connectedRelays.add(relay);
-              logger.info(`Emergency connection established to relay: ${relay}`);
-              resolve(true);
-            };
+              logger.info(`Added ${relay} to connected relays via force-send`);
+            }
             
-            ws.onerror = () => {
-              clearTimeout(timeout);
-              logger.warn(`Failed emergency connection to relay: ${relay}`);
-              resolve(false);
-            };
-          });
-        } catch (error) {
-          logger.error(`Error in emergency connection to ${relay}`, error);
-          return false;
-        }
-      });
-      
-      // Wait for all connection attempts
-      await Promise.all(connectPromises);
-      
-      // Log outcome of reconnection
-      if (this.connectedRelays.size > 0) {
-        logger.info(`Successfully reconnected to ${this.connectedRelays.size} relays for publishing`);
-      } else {
-        logger.error('Failed to reconnect to any relays for publishing');
+            // Close after sending
+            setTimeout(() => ws.close(), 500);
+          } catch (err) {
+            logger.error(`Error sending event to ${relay}`, err);
+            ws.close();
+          }
+        };
+        ws.onerror = () => {
+          logger.warn(`Failed to force-send to ${relay}`);
+          ws.close();
+        };
+      } catch (err) {
+        logger.error(`Error creating WebSocket for ${relay}`, err);
       }
-    }
+    });
     
     // Set up retry logic
     const maxRetries = 3;
@@ -763,7 +750,7 @@ export class SimplePool {
                 }
                 
                 // Mark this user as active
-                localStorage.setItem(`omestr_global_user_activity_${event.pubkey}`, Date.now().toString());
+                localStorage.setItem(`${KEY_PREFIX}user_activity_${event.pubkey}`, Date.now().toString());
               } catch (e) {
                 logger.error('Error updating looking users in localStorage', e);
               }
