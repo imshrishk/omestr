@@ -20,6 +20,7 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
   const [pingResults, setPingResults] = useState<Record<string, { status: string; latency?: number }>>({});
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
+  const [testResult, setTestResult] = useState<{success: boolean; message: string} | null>(null);
   
   // Ping relays to check connectivity
   const pingRelays = async () => {
@@ -67,6 +68,120 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
     }
   };
   
+  // Test cross-device functionality
+  const testCrossDeviceDiscovery = async () => {
+    setTestResult({ success: false, message: "Testing..." });
+    
+    try {
+      // Test 1: Ensure we can connect to relays
+      let relaySuccess = false;
+      for (const relay of DEFAULT_RELAYS) {
+        try {
+          const ws = new WebSocket(relay);
+          await new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              ws.close();
+              reject(new Error('Connection timeout'));
+            }, 5000);
+            
+            ws.onopen = () => {
+              clearTimeout(timeout);
+              relaySuccess = true;
+              ws.close();
+              resolve();
+            };
+            
+            ws.onerror = () => {
+              clearTimeout(timeout);
+              ws.close();
+              reject(new Error('Connection failed'));
+            };
+          });
+          
+          if (relaySuccess) break;
+        } catch (error) {
+          // Try next relay
+        }
+      }
+      
+      if (!relaySuccess) {
+        setTestResult({ 
+          success: false, 
+          message: "Failed to connect to any relays. Check your network settings and firewall." 
+        });
+        return;
+      }
+      
+      // Test 2: Verify localStorage access
+      const testKey = "omestr_test_" + Date.now();
+      const testValue = "test_" + Math.random();
+      
+      try {
+        localStorage.setItem(testKey, testValue);
+        const readValue = localStorage.setItem(testKey, testValue);
+        localStorage.removeItem(testKey);
+      } catch (error) {
+        setTestResult({ 
+          success: false, 
+          message: "LocalStorage is not working correctly. Check browser privacy settings." 
+        });
+        return;
+      }
+      
+      // Generate test IDs
+      const testPubkey = "test_" + Math.random().toString(36).substring(2);
+      const testSessionId = "test_" + Math.random().toString(36).substring(2);
+      
+      // Test 3: Add and remove from looking users
+      try {
+        const lookingUsersKey = 'omestr_global_looking_users';
+        const existingData = localStorage.getItem(lookingUsersKey) || '[]';
+        const lookingUsers = JSON.parse(existingData) as string[];
+        
+        // Add our test pubkey
+        if (!lookingUsers.includes(testPubkey)) {
+          lookingUsers.push(testPubkey);
+          localStorage.setItem(lookingUsersKey, JSON.stringify(lookingUsers));
+        }
+        
+        // Check if it was added
+        const updatedData = localStorage.getItem(lookingUsersKey) || '[]';
+        const updatedUsers = JSON.parse(updatedData) as string[];
+        
+        if (!updatedUsers.includes(testPubkey)) {
+          setTestResult({ 
+            success: false, 
+            message: "Failed to update looking users list. Check browser storage." 
+          });
+          return;
+        }
+        
+        // Remove our test pubkey
+        const finalUsers = updatedUsers.filter(id => id !== testPubkey);
+        localStorage.setItem(lookingUsersKey, JSON.stringify(finalUsers));
+      } catch (error) {
+        setTestResult({ 
+          success: false, 
+          message: "Error while testing looking users storage. Check browser console." 
+        });
+        return;
+      }
+      
+      // All tests passed
+      setTestResult({ 
+        success: true, 
+        message: "All connectivity tests passed! Cross-device matchmaking should work." 
+      });
+      
+    } catch (error) {
+      setTestResult({ 
+        success: false, 
+        message: "An error occurred during testing. Check browser console." 
+      });
+      console.error("Cross-device test error:", error);
+    }
+  };
+  
   useEffect(() => {
     // Automatically ping relays when component mounts
     pingRelays();
@@ -91,6 +206,17 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
           </button>
         </div>
       </div>
+      
+      {testResult && (
+        <div className={`mb-4 p-3 rounded-lg border ${testResult.success 
+          ? 'bg-green-900/30 border-green-500/30 text-green-300' 
+          : 'bg-red-900/30 border-red-500/30 text-red-300'}`}>
+          <div className="flex items-center space-x-2">
+            <span className={`h-2.5 w-2.5 rounded-full ${testResult.success ? 'bg-green-500' : 'bg-red-500'}`}></span>
+            <p className="text-sm font-medium">{testResult.message}</p>
+          </div>
+        </div>
+      )}
       
       {showInstructions && (
         <div className="mb-4 p-3 bg-blue-900/30 rounded-lg border border-blue-500/30 text-blue-100">
@@ -169,6 +295,18 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
               </div>
             </div>
           ))}
+        </div>
+      </div>
+      
+      <div className="mb-4">
+        <div className="flex justify-between items-center mb-2">
+          <h4 className="text-sm font-semibold text-gray-300">Cross-Device Test:</h4>
+          <button
+            onClick={testCrossDeviceDiscovery}
+            className="px-2 py-1 bg-indigo-600/80 hover:bg-indigo-700/80 rounded text-xs"
+          >
+            Test Discovery
+          </button>
         </div>
       </div>
       

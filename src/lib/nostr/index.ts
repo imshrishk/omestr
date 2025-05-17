@@ -16,10 +16,11 @@ declare global {
 // Default relays to connect to - increased list of reliable relays
 export const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
-  'wss://nostr.wine',
-  'wss://nos.lol',
   'wss://relay.nostr.band',
-  'wss://nostr.zebedee.cloud'
+  'wss://nostr.plebchain.org',
+  'wss://nos.lol',
+  'wss://relay.snort.social',
+  'wss://relay.current.fyi'
 ];
 
 // Define NostrEvent interface
@@ -536,6 +537,19 @@ export class SimplePool {
     return this;
   }
   
+  // Disconnect from all relays
+  disconnect() {
+    logger.info('Disconnecting from all relays');
+    
+    // Clear connected relays set
+    this.connectedRelays.clear();
+    
+    // Reset reconnect attempts
+    this.reconnectAttempts.clear();
+    
+    return this;
+  }
+  
   // Start polling for updates from other browsers
   private startPolling() {
     if (this.polling) return;
@@ -654,7 +668,7 @@ export class SimplePool {
     }
   }
   
-  // Publish an event to all connected relays
+  // Publish an event to all connected relays with retry
   async publish(relays: string[], event: NostrEvent) {
     // Store the event locally for other browser tabs to see
     saveEvent(event);
@@ -662,49 +676,129 @@ export class SimplePool {
     // Broadcast the event to all subscription callbacks
     this.broadcastEvent(event);
     
-    // Make sure we have at least one connected relay
+    // If we have no connected relays, try to reconnect immediately
     if (this.connectedRelays.size === 0) {
-      logger.warn('No connected relays to publish to, attempting to reconnect...');
+      logger.warn('No connected relays to publish to, attempting emergency reconnection...');
       
-      // Try to reconnect to all relays
-      this.relays.forEach(relay => {
+      // Try to reconnect to all relays simultaneously
+      const connectPromises = relays.map(async (relay) => {
         try {
-          const ws = new WebSocket(relay);
-          
-          ws.onopen = () => {
-            this.connectedRelays.add(relay);
-            logger.info(`Successfully connected to relay during publish: ${relay}`);
-          };
-          
-          ws.onerror = () => {
-            logger.warn(`Failed to connect to relay during publish: ${relay}`);
-          };
+          return new Promise<boolean>((resolve) => {
+            const ws = new WebSocket(relay);
+            
+            // Set connection timeout
+            const timeout = setTimeout(() => {
+              ws.close();
+              resolve(false);
+            }, 5000);
+            
+            ws.onopen = () => {
+              clearTimeout(timeout);
+              this.connectedRelays.add(relay);
+              logger.info(`Emergency connection established to relay: ${relay}`);
+              resolve(true);
+            };
+            
+            ws.onerror = () => {
+              clearTimeout(timeout);
+              logger.warn(`Failed emergency connection to relay: ${relay}`);
+              resolve(false);
+            };
+          });
         } catch (error) {
-          logger.error(`Error connecting to ${relay} during publish`, error);
+          logger.error(`Error in emergency connection to ${relay}`, error);
+          return false;
         }
       });
       
-      // Wait briefly for connections to establish
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    
-    // In a real implementation, this would publish to actual WebSockets
-    // For this demo simulation, we'll just log it
-    const connectedRelaysCount = this.connectedRelays.size;
-    
-    if (connectedRelaysCount > 0) {
-      logger.info(`Published event to ${connectedRelaysCount} relays`, { 
-        id: event.id.substring(0, 8), 
-        kind: event.kind,
-        tags: event.tags
-      });
+      // Wait for all connection attempts
+      await Promise.all(connectPromises);
       
-      // Successfully published
-      return true;
-    } else {
-      logger.error('Failed to publish event - no connected relays');
-      return false;
+      // Log outcome of reconnection
+      if (this.connectedRelays.size > 0) {
+        logger.info(`Successfully reconnected to ${this.connectedRelays.size} relays for publishing`);
+      } else {
+        logger.error('Failed to reconnect to any relays for publishing');
+      }
     }
+    
+    // Set up retry logic
+    const maxRetries = 3;
+    let retryCount = 0;
+    let publishSuccess = false;
+    
+    while (retryCount <= maxRetries && !publishSuccess) {
+      // Get current connected relays count
+      const connectedRelaysCount = this.connectedRelays.size;
+      
+      if (connectedRelaysCount > 0) {
+        try {
+          // In a real implementation, this would publish to actual WebSockets
+          // For this simulation, we'll log it and store it
+          logger.info(`Publishing event to ${connectedRelaysCount} relays (attempt ${retryCount + 1}/${maxRetries + 1})`, { 
+            id: event.id.substring(0, 8), 
+            kind: event.kind,
+            tags: event.tags
+          });
+          
+          // Simulate successful publish
+          publishSuccess = true;
+          
+          // If this is a matchmaking event, store it more persistently for discovery
+          if (event.kind === OMESTR_KIND) {
+            // Store in localStorage for better cross-browser visibility
+            const statusTag = event.tags.find(tag => tag[0] === 'status');
+            if (statusTag && statusTag[1] === 'looking') {
+              // Store this pubkey in the looking users list for broader discovery
+              try {
+                const lookingUsersKey = 'omestr_global_looking_users';
+                const existingData = localStorage.getItem(lookingUsersKey) || '[]';
+                const lookingUsers = JSON.parse(existingData) as string[];
+                
+                // Add the pubkey if it's not already there
+                if (!lookingUsers.includes(event.pubkey)) {
+                  lookingUsers.push(event.pubkey);
+                  localStorage.setItem(lookingUsersKey, JSON.stringify(lookingUsers));
+                  logger.info(`Added pubkey to looking users: ${event.pubkey.substring(0, 8)}`);
+                }
+                
+                // Mark this user as active
+                localStorage.setItem(`omestr_global_user_activity_${event.pubkey}`, Date.now().toString());
+              } catch (e) {
+                logger.error('Error updating looking users in localStorage', e);
+              }
+            }
+          }
+        } catch (error) {
+          logger.error(`Error publishing (attempt ${retryCount + 1}/${maxRetries + 1})`, error);
+          retryCount++;
+          
+          // Wait with exponential backoff before retrying
+          if (retryCount <= maxRetries) {
+            const backoffTime = Math.min(1000 * Math.pow(2, retryCount), 8000);
+            logger.info(`Retrying publish in ${backoffTime}ms...`);
+            await new Promise(resolve => setTimeout(resolve, backoffTime));
+          }
+        }
+      } else {
+        logger.error(`No connected relays for publish attempt ${retryCount + 1}`);
+        retryCount++;
+        
+        if (retryCount <= maxRetries) {
+          // Wait before retrying
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+          // Try to connect to relays again
+          this.connect(relays);
+          
+          // Give relays time to connect
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+    }
+    
+    // Final result
+    return publishSuccess;
   }
   
   // Subscribe to events matching a filter

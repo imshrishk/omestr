@@ -251,18 +251,13 @@ export function useNostrMatchmaking() {
       return;
     }
     
-    // Only skip if we're certain it's our own browser ID
-    if (typeof window !== 'undefined') {
-      const partnerBrowserId = localStorage.getItem(`omestr_browser_${potentialPartnerPubkey}`);
-      
-      // Only skip if it's exactly the same ID as ours
-      if (partnerBrowserId && partnerBrowserId === browserInstanceId) {
-        logger.warn('Ignoring match with our own browser instance', {
-          partner: potentialPartnerPubkey.substring(0, 8),
-          browserInstanceId: browserInstanceId.substring(0, 8)
-        });
-        return;
-      }
+    // Only skip if we're absolutely certain this is our own pubkey
+    // DO NOT skip based on browser ID - this prevents cross-device matching
+    if (potentialPartnerPubkey === keypair.publicKey) {
+      logger.warn('Ignoring match with ourselves (same pubkey)', {
+        pubkey: potentialPartnerPubkey.substring(0, 8)
+      });
+      return;
     }
     
     // Update connection state
@@ -360,18 +355,13 @@ export function useNostrMatchmaking() {
   const handleLookingMatch = useCallback((partnerPubkey: string, chatSessionId: string) => {
     if (!keypair || !poolRef.current || status !== 'looking') return;
     
-    // Only skip if we're certain it's our own browser ID
-    if (typeof window !== 'undefined') {
-      const partnerBrowserId = localStorage.getItem(`omestr_browser_${partnerPubkey}`);
-      
-      // Only skip if it's exactly the same ID as ours
-      if (partnerBrowserId && partnerBrowserId === browserInstanceId) {
-        logger.warn('Ignoring match with our own browser instance', {
-          partner: partnerPubkey.substring(0, 8),
-          browserInstanceId: browserInstanceId.substring(0, 8)
-        });
-        return;
-      }
+    // Only skip if we're absolutely certain this is our own pubkey
+    // DO NOT skip based on browser ID - this prevents cross-device matching
+    if (partnerPubkey === keypair.publicKey) {
+      logger.warn('Ignoring match with ourselves (same pubkey)', {
+        pubkey: partnerPubkey.substring(0, 8)
+      });
+      return;
     }
     
     // Set a minimum time between match attempts to prevent spamming
@@ -387,7 +377,7 @@ export function useNostrMatchmaking() {
     
     // Attempt to match with this user
     handlePotentialMatch(partnerPubkey, chatSessionId);
-  }, [keypair, poolRef, status, browserInstanceId, handlePotentialMatch]);
+  }, [keypair, poolRef, status, handlePotentialMatch]);
   
   // Subscribe to matchmaking events
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -407,6 +397,15 @@ export function useNostrMatchmaking() {
       poolRef.current,
       publicKey,
       (event: NostrEvent) => {
+        // Log all incoming events for troubleshooting
+        logger.info(`Received matchmaking event kind ${event.kind} from ${event.pubkey.substring(0, 8)}`, {
+          relays: poolRef.current?.connectedRelays.size || 0,
+          status: event.tags.find(t => t[0] === 'status')?.[1] || 'unknown',
+          ourPubkey: publicKey.substring(0, 8),
+          browserId: event.tags.find(t => t[0] === 'browser_id')?.[1]?.substring(0, 8) || 'unknown',
+          timestamp: new Date(event.created_at * 1000).toISOString()
+        });
+        
         // Skip our own events
         if (event.pubkey === publicKey) {
           logger.debug('Skipping our own matchmaking event', {
@@ -416,19 +415,7 @@ export function useNostrMatchmaking() {
           return;
         }
         
-        // Extract browser ID from tags to avoid connecting to our own browser in different tabs
-        const browserIdTag = event.tags.find(tag => tag[0] === 'browser_id');
-        const eventBrowserId = browserIdTag ? browserIdTag[1] : '';
-        
-        // Skip events from our own browser - but only if we're certain it's the same browser
-        if (eventBrowserId && eventBrowserId === browserInstanceId) {
-          logger.debug('Skipping matchmaking event from our own browser', { 
-            eventPubkey: event.pubkey.substring(0, 8),
-            ourPubkey: publicKey.substring(0, 8),
-            eventBrowserId: eventBrowserId.substring(0, 8)
-          });
-          return;
-        }
+        // Don't skip based on browser ID for cross-device compatibility
         
         // Extract status from tags
         const statusTag = event.tags.find(tag => tag[0] === 'status');
@@ -458,7 +445,8 @@ export function useNostrMatchmaking() {
           logger.info(`Found user who is looking: ${event.pubkey.substring(0, 8)}`, {
             eventStatus,
             eventSessionId,
-            browserId: eventBrowserId
+            ourStatus: status,
+            relayCount: poolRef.current?.connectedRelays.size || 0
           });
           
           // Try to match with this user
@@ -469,7 +457,8 @@ export function useNostrMatchmaking() {
           logger.info(`User ${event.pubkey.substring(0, 8)} has matched with us`, {
             eventStatus,
             eventSessionId,
-            chatSessionId
+            chatSessionId,
+            ourStatus: status
           });
           
           // Confirm match with this user
@@ -479,7 +468,7 @@ export function useNostrMatchmaking() {
     );
     
     matchmakingSubRef.current = sub;
-  }, [status, browserInstanceId, handleLookingMatch, handleMatchConfirmation]);
+  }, [status, handleLookingMatch, handleMatchConfirmation]);
   
   // Start looking for a chat partner
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -489,6 +478,11 @@ export function useNostrMatchmaking() {
       logger.info('Already looking for chat partners');
       return;
     }
+    
+    logger.info('Starting to look for chat partners...', {
+      status: status,
+      previousPartner: partner ? partner.id.substring(0, 8) : 'none'
+    });
     
     // Clear any existing connection timeout
     if (connectionTimeoutRef.current) {
@@ -560,6 +554,18 @@ export function useNostrMatchmaking() {
           setSessionId(generateRandomString(12));
         }
         
+        // First, check connected relays
+        logger.info(`Currently connected to ${poolRef.current.connectedRelays.size} relays`);
+        if (poolRef.current.connectedRelays.size === 0) {
+          logger.warn('No connected relays, forcing reconnection...');
+          poolRef.current.connect(DEFAULT_RELAYS);
+          
+          // Wait a bit for connections to establish
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          logger.info(`After reconnection, connected to ${poolRef.current.connectedRelays.size} relays`);
+        }
+        
+        // Publish initial looking event
         await publishMatchmakingEvent(
           poolRef.current,
           newKeypair.privateKey,
@@ -584,31 +590,36 @@ export function useNostrMatchmaking() {
               try {
                 const lookingUsers = JSON.parse(lookingUsersData) as string[];
                 
-                // Filter out our own ID and browser instance
+                // Don't filter by browser ID to allow cross-device matching
                 const otherUsers = lookingUsers.filter(id => {
-                  // Don't match with our own pubkey
-                  if (id === newKeypair.publicKey) return false;
-                  
-                  // Don't match with our own browser instance 
-                  // Now retrieving from sessionStorage to ensure unique IDs per tab
-                  const userBrowserId = localStorage.getItem(`omestr_browser_${id}`);
-                  if (userBrowserId === browserInstanceId) return false;
-                  
-                  return true;
+                  return id !== newKeypair.publicKey; // Only filter out our own pubkey
                 });
                 
                 if (otherUsers.length > 0) {
-                  logger.info(`Found ${otherUsers.length} other looking users to try to match with`);
+                  logger.info(`Found ${otherUsers.length} other looking users to try to match with`, {
+                    users: otherUsers.map(u => u.substring(0, 8))
+                  });
                   
-                  // Try to match with the first one
-                  const targetUser = otherUsers[0];
-                  logger.info(`Attempting to match with user: ${targetUser.substring(0, 8)}`);
-                  
-                  // Generate a session ID for this user if we don't have it
-                  const userChatSessionId = generateRandomString(12);
-                  
-                  // Send a matched event for this user
-                  handleLookingMatch(targetUser, userChatSessionId);
+                  // Try to match with each one in sequence
+                  for (const targetUser of otherUsers) {
+                    logger.info(`Attempting to match with user: ${targetUser.substring(0, 8)}`);
+                    
+                    // Generate a session ID for this user
+                    const userChatSessionId = generateRandomString(12);
+                    
+                    // Send a matched event for this user
+                    await handleLookingMatch(targetUser, userChatSessionId);
+                    
+                    // If we got connected, break the loop
+                    if (status === 'connected') {
+                      break;
+                    }
+                    
+                    // Small delay between attempts
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                  }
+                } else {
+                  logger.info('No other looking users found');
                 }
               } catch (error) {
                 logger.error('Error parsing looking users data', error);
@@ -617,7 +628,7 @@ export function useNostrMatchmaking() {
           }
         }
         
-        // Set up a repeating publish to ensure our looking event is seen
+        // Set up a more frequent republish (every 3 seconds) to ensure visibility
         const publishInterval = setInterval(async () => {
           // Check if we need to stop publishing
           if (isConnectingRef.current || !poolRef.current) {
@@ -632,7 +643,10 @@ export function useNostrMatchmaking() {
             return;
           }
           
-          logger.info('Republishing looking event to increase visibility');
+          logger.info('Republishing looking event to increase visibility', {
+            connectedRelays: poolRef.current.connectedRelays.size
+          });
+          
           try {
             await publishMatchmakingEvent(
               poolRef.current,
@@ -646,7 +660,7 @@ export function useNostrMatchmaking() {
           } catch (err) {
             logger.error('Error republishing looking event', err);
           }
-        }, 5000); // Republish every 5 seconds
+        }, 3000); // Republish every 3 seconds
         
         // Helper function to get current status and avoid closure issues
         const getStatus = (): ConnectionStatus => {
@@ -686,8 +700,7 @@ export function useNostrMatchmaking() {
         setStatus('disconnected');
       }
     } else {
-      // Use existing keypair with the same publishing pattern
-      // Use the session ID from state and don't create a new one as currentSessionId
+      // Use existing keypair for looking
       const existingSessionId = sessionId || generateRandomString(12);
       if (!sessionId) {
         setSessionId(existingSessionId);
