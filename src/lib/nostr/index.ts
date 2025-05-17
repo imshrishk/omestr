@@ -5,10 +5,8 @@ import { logger } from './logger';
 // Default relays to connect to - increased list of reliable relays
 export const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
-  'wss://nostr.fmt.wiz.biz',
-  'wss://relay.snort.social',
+  'wss://nostr.wine',
   'wss://nos.lol',
-  'wss://relay.current.fyi',
   'wss://relay.nostr.band',
   'wss://nostr.zebedee.cloud'
 ];
@@ -39,6 +37,13 @@ const initBroadcastChannel = () => {
   if (typeof window !== 'undefined' && !broadcastChannel) {
     try {
       broadcastChannel = new BroadcastChannel('omestr_channel');
+      broadcastChannel.onmessage = (event) => {
+        const { type, data } = JSON.parse(event.data);
+        if (type === 'storage_update') {
+          logger.debug('Received storage update from other tab');
+          checkForUpdates();
+        }
+      };
       logger.info('BroadcastChannel initialized successfully');
     } catch (error) {
       logger.error('BroadcastChannel initialization failed', error);
@@ -358,10 +363,21 @@ const broadcastEvent = (type: string, data: Record<string, unknown>) => {
   if (typeof window === 'undefined' || !broadcastChannel) return;
   
   try {
-    broadcastChannel.postMessage(JSON.stringify({ type, data }));
-    logger.debug(`Broadcasted ${type} event via BroadcastChannel`);
+    const message = JSON.stringify({
+      type,
+      data,
+      timestamp: Date.now()
+    });
+    
+    broadcastChannel.postMessage(message);
+    
+    // Additionally, update the last update timestamp in localStorage
+    // This helps with cross-browser detection
+    localStorage.setItem(STORAGE_KEYS.LAST_UPDATE, Date.now().toString());
+    
+    logger.debug(`Broadcasted event: ${type}`, data);
   } catch (error) {
-    logger.error('Error broadcasting event', { error, type });
+    logger.error(`Error broadcasting event: ${type}`, error);
   }
 };
 
@@ -433,19 +449,25 @@ export class SimplePool {
           if (attempts < this.maxReconnectAttempts) {
             logger.info(`Attempting to reconnect to relay: ${relay} (attempt ${attempts + 1}/${this.maxReconnectAttempts})`);
             
-            // Simulate connecting to the relay
-            setTimeout(() => {
-              // 70% chance of successful connection in this simulation
-              if (Math.random() < 0.7) {
+            try {
+              const ws = new WebSocket(relay);
+              
+              ws.onopen = () => {
                 this.connectedRelays.add(relay);
                 this.reconnectAttempts.delete(relay); // Reset attempts on success
                 logger.info(`Successfully reconnected to relay: ${relay}`);
-              } else {
+              };
+              
+              ws.onerror = () => {
                 // Failed to connect, increment attempt counter
                 this.reconnectAttempts.set(relay, attempts + 1);
                 logger.warn(`Failed to reconnect to relay: ${relay}`);
-              }
-            }, 1000);
+              };
+            } catch (error) {
+              // Failed to connect, increment attempt counter
+              this.reconnectAttempts.set(relay, attempts + 1);
+              logger.error(`Error reconnecting to ${relay}`, error);
+            }
           } else {
             logger.error(`Max reconnect attempts reached for relay: ${relay}, giving up`);
           }
@@ -467,23 +489,32 @@ export class SimplePool {
     
     logger.info('Connecting to relays', { relays });
     
-    // Simulate connecting to relays
+    // Connect to relays using WebSockets
     relays.forEach(relay => {
-      // In a real implementation, this would connect to actual WebSockets
-      // For this demo, we'll just add them to the connected set
-      setTimeout(() => {
-        // 80% chance of successful initial connection
-        if (Math.random() < 0.8) {
+      try {
+        const ws = new WebSocket(relay);
+        
+        ws.onopen = () => {
           this.connectedRelays.add(relay);
-        } else {
-          logger.warn(`Failed to connect to relay: ${relay}`);
-        }
-      }, 500);
+          logger.info(`Connected to relay: ${relay}`);
+        };
+        
+        ws.onerror = (e) => {
+          logger.warn(`Failed to connect to relay: ${relay}`, e);
+        };
+        
+        ws.onclose = () => {
+          this.connectedRelays.delete(relay);
+          logger.info(`Disconnected from relay: ${relay}`);
+        };
+      } catch (error) {
+        logger.error(`Error connecting to ${relay}`, error);
+      }
     });
     
-    logger.info('Connected to relays', { 
+    logger.info('Initiated connections to relays', { 
       relays,
-      totalConnected: this.connectedRelays.size
+      totalRelays: relays.length
     });
     
     return this;
