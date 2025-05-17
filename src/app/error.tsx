@@ -20,7 +20,7 @@ export default function Error({
         <div className="text-red-500 text-5xl mb-4">⚠️</div>
         <h2 className="text-2xl font-bold mb-4">Something went wrong</h2>
         <p className="text-gray-300 mb-6">
-          We've encountered an error. This could be due to network issues or problems connecting to Nostr relays.
+          We&apos;ve encountered an error. This could be due to network issues or problems connecting to Nostr relays.
         </p>
         <div className="flex flex-col space-y-3">
           <button

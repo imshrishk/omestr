@@ -243,40 +243,25 @@ const saveEvent = (event: NostrEvent) => {
 };
 
 // Type for message entries
-type MessageEntry = [string, any[]];
+type MessageEntry = [string, Record<string, unknown>[]];
 
 // Load messages from localStorage
-const loadMessages = (): Map<string, any[]> => {
-  if (typeof window === 'undefined') return new Map<string, any[]>();
+const loadMessages = (): Map<string, Record<string, unknown>[]> => {
+  if (typeof window === 'undefined') return new Map<string, Record<string, unknown>[]>();
   
   try {
     const data = localStorage.getItem(STORAGE_KEYS.MESSAGES);
     if (!data) {
       logger.info('No messages found in storage');
-      return new Map<string, any[]>();
+      return new Map<string, Record<string, unknown>[]>();
     }
     
     const parsed = JSON.parse(data) as MessageEntry[];
     logger.info(`Loaded ${parsed.length} conversation threads from storage`);
-    return new Map<string, any[]>(parsed);
+    return new Map<string, Record<string, unknown>[]>(parsed);
   } catch (error) {
     logger.error('Error loading messages from storage', error);
-    return new Map<string, any[]>();
-  }
-};
-
-// Save messages to localStorage
-const saveMessages = (messages: Map<string, any[]>) => {
-  if (typeof window === 'undefined') return;
-  
-  try {
-    const messagesArray = Array.from(messages.entries());
-    const data = JSON.stringify(messagesArray);
-    localStorage.setItem(STORAGE_KEYS.MESSAGES, data);
-    localStorage.setItem(STORAGE_KEYS.LAST_UPDATE, Date.now().toString());
-    logger.info(`Saved ${messagesArray.length} conversation threads to storage`);
-  } catch (error) {
-    logger.error('Error saving messages to storage', error);
+    return new Map<string, Record<string, unknown>[]>();
   }
 };
 
@@ -284,7 +269,7 @@ const saveMessages = (messages: Map<string, any[]>) => {
 interface SharedInstance {
   looking: Set<string>;
   matched: Map<string, string>;
-  messages: Map<string, any[]>;
+  messages: Map<string, Record<string, unknown>[]>;
   lastChecked: number;
 }
 
@@ -298,7 +283,7 @@ const getSharedInstance = (): SharedInstance => {
     return { 
       looking: new Set<string>(), 
       matched: new Map<string, string>(), 
-      messages: new Map<string, any[]>(),
+      messages: new Map<string, Record<string, unknown>[]>(),
       lastChecked: 0
     };
   }
@@ -369,7 +354,7 @@ export const generateKeypair = () => {
   return { privateKey, publicKey };
 };
 
-const broadcastEvent = (type: string, data: any) => {
+const broadcastEvent = (type: string, data: Record<string, unknown>) => {
   if (typeof window === 'undefined' || !broadcastChannel) return;
   
   try {
@@ -384,7 +369,7 @@ const broadcastEvent = (type: string, data: any) => {
 export const dumpLocalStorage = () => {
   if (typeof window === 'undefined') return null;
   
-  const result: Record<string, any> = {};
+  const result: Record<string, unknown> = {};
   
   // Get all storage items with our prefix
   Object.keys(localStorage).forEach(key => {
@@ -789,7 +774,8 @@ export class SimplePool {
             
             // Send all existing messages
             for (const message of messages) {
-              callbacks.forEach(callback => callback(message));
+              // Cast message to NostrEvent
+              callbacks.forEach(callback => callback(message as unknown as NostrEvent));
             }
           }
         }
@@ -1047,7 +1033,7 @@ export const clearStorage = () => {
     if (sharedInstance) {
       sharedInstance.looking = new Set<string>();
       sharedInstance.matched = new Map<string, string>();
-      sharedInstance.messages = new Map<string, any[]>();
+      sharedInstance.messages = new Map<string, Record<string, unknown>[]>();
       sharedInstance.lastChecked = Date.now();
     }
     

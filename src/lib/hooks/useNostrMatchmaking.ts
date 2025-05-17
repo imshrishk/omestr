@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { 
   generateKeypair, 
   createPool, 
@@ -9,9 +9,7 @@ import {
   SimplePool, 
   generateRandomString, 
   DEFAULT_RELAYS,
-  OMESTR_KIND,
   NostrEvent,
-  MATCH_EXPIRY,
   clearStorage
 } from '../nostr';
 import { logger } from '../nostr/logger';
@@ -38,7 +36,7 @@ export type PartnerInfo = {
 type Subscription = {
   sub: string;
   unsub: () => void;
-  on: (event: string, callback: (event: any) => void) => void;
+  on: (event: string, callback: (event: NostrEvent) => void) => void;
 };
 
 // Generate a unique browser instance ID to differentiate between browser sessions
@@ -190,6 +188,7 @@ export function useNostrMatchmaking() {
   }, [keypair, status, browserInstanceId, subscribeToChatWithPartner]);
   
   // Handle a potential match
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const handlePotentialMatch = useCallback(async (potentialPartnerPubkey: string, partnerSessionId: string) => {
     if (!keypair || !poolRef.current) return;
     // Only proceed if we're in an appropriate state for matching
@@ -313,6 +312,7 @@ export function useNostrMatchmaking() {
   }, [keypair, status, sessionId, browserInstanceId, partner]);
   
   // Handle looking match - when we find someone who is looking
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const handleLookingMatch = useCallback((partnerPubkey: string, chatSessionId: string) => {
     if (!keypair || !poolRef.current || status !== 'looking') return;
     
@@ -346,6 +346,7 @@ export function useNostrMatchmaking() {
   }, [keypair, poolRef, status, browserInstanceId, handlePotentialMatch]);
   
   // Subscribe to matchmaking events
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const subscribeToMatchmakingEvents = useCallback((publicKey: string) => {
     if (!poolRef.current) return;
     
@@ -437,6 +438,7 @@ export function useNostrMatchmaking() {
   }, [status, browserInstanceId, handleLookingMatch, handleMatchConfirmation]);
   
   // Start looking for a chat partner
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const startLooking = useCallback(async () => {
     // If already looking or connecting, don't do anything
     if (status === 'looking' || status === 'connecting') {
@@ -603,13 +605,12 @@ export function useNostrMatchmaking() {
         }, 5000); // Republish every 5 seconds
         
         // Helper function to get current status and avoid closure issues
-        function getStatus(): ConnectionStatus {
+        const getStatus = (): ConnectionStatus => {
           return status;
         }
         
         // Set a timeout to reset to 'looking' state if no match is found
         // This helps recover from stalled 'connecting' states
-        const statusRef = status; // Capture current status for use in timeout
         connectionTimeoutRef.current = setTimeout(() => {
           // Check if we're still in a connecting state with no partner
           if (isConnectingRef.current && !partner) {
@@ -642,9 +643,10 @@ export function useNostrMatchmaking() {
       }
     } else {
       // Use existing keypair with the same publishing pattern
-      const currentSessionId = sessionId || generateRandomString(12);
+      // Use the session ID from state and don't create a new one as currentSessionId
+      const existingSessionId = sessionId || generateRandomString(12);
       if (!sessionId) {
-        setSessionId(currentSessionId);
+        setSessionId(existingSessionId);
       }
       
       // Publish looking event with existing keypair
@@ -652,13 +654,13 @@ export function useNostrMatchmaking() {
         poolRef.current,
         keypair.privateKey,
         keypair.publicKey,
-        currentSessionId,
+        existingSessionId,
         'looking',
         undefined,
         browserInstanceId
       );
       
-      // Subscribe to matchmaking events with existing keypair
+      // Subscribe to matchmaking events
       subscribeToMatchmakingEvents(keypair.publicKey);
     }
   }, [initialize, status, browserInstanceId, partner, subscribeToMatchmakingEvents, handleLookingMatch, keypair, sessionId]);
@@ -698,7 +700,8 @@ export function useNostrMatchmaking() {
       
       setMessages(prev => [...prev, newMessage]);
     } catch (err) {
-      logger.error('Error sending message', err);
+      const error = err as Error;
+      logger.error('Error sending message', error);
       setError('Failed to send message');
     }
   }, [keypair, partner, browserInstanceId]);

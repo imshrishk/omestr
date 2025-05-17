@@ -3,12 +3,30 @@ import { useNostrMatchmaking } from '../lib/hooks/useNostrMatchmaking';
 import { logger } from '../lib/nostr/logger';
 import { dumpLocalStorage } from '../lib/nostr/index';
 
+// Define log entry type
+interface LogEntry {
+  level: string;
+  message: string;
+  timestamp: number;
+  data?: Record<string, unknown>;
+}
+
+// Define storage data type
+interface StorageData {
+  [key: string]: string | unknown;
+}
+
 export default function ChatInterface() {
   const [inputMessage, setInputMessage] = useState('');
   const [showDebug, setShowDebug] = useState(false);
-  const [logs, setLogs] = useState<any[]>([]);
-  const [storageData, setStorageData] = useState<any>(null);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [storageData, setStorageData] = useState<StorageData | null>(null);
+  const [chatDuration, setChatDuration] = useState<number>(0);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
+  const [showEmojiPicker, setShowEmojiPicker] = useState<boolean>(false);
+  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const { 
     status, 
     messages, 
@@ -16,10 +34,49 @@ export default function ChatInterface() {
     error,
     startLooking, 
     sendMessage, 
-    disconnect, 
     skipToNext,
     resetAll
   } = useNostrMatchmaking();
+
+  // List of quick emoji reactions
+  const quickEmojis = ['👍', '👎', '😂', '😮', '😢', '❤️', '🔥', '👋'];
+  
+  // Add emoji reaction to a message
+  const addReaction = (messageId: string, emoji: string) => {
+    sendMessage(`${emoji} (reaction)`);
+    setShowEmojiPicker(false);
+    setSelectedMessageId(null);
+  };
+
+  // Create audio element for message notification
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      // Create a very simple notification sound using the Web Audio API
+      audioRef.current = new Audio();
+      audioRef.current.src = 'data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBIAAAABAAEAQB8AAEAfAAABAAgAAABMYXZjNTcuODkuMTAwAA==';
+      audioRef.current.volume = 0.5;
+    }
+    
+    return () => {
+      if (audioRef.current) {
+        audioRef.current = null;
+      }
+    };
+  }, []);
+
+  // Play sound when receiving messages
+  useEffect(() => {
+    if (messages.length > 0 && soundEnabled) {
+      const lastMessage = messages[messages.length - 1];
+      // Only play sound for partner messages
+      if (lastMessage.sender === 'partner') {
+        audioRef.current?.play().catch(err => {
+          // Handle any errors (e.g., user hasn't interacted with the page yet)
+          logger.warn('Could not play notification sound', err);
+        });
+      }
+    }
+  }, [messages, soundEnabled]);
 
   // Start looking for a chat partner when the component mounts
   useEffect(() => {
@@ -46,6 +103,35 @@ export default function ChatInterface() {
     }
   }, [messages]);
 
+  // Timer for chat duration
+  useEffect(() => {
+    let interval: NodeJS.Timeout | null = null;
+    
+    // Reset timer when connecting to a new partner
+    if (status === 'connected') {
+      setChatDuration(0);
+      
+      // Start timer
+      interval = setInterval(() => {
+        setChatDuration(prev => prev + 1);
+      }, 1000);
+    } else {
+      // Reset timer when not connected
+      setChatDuration(0);
+    }
+    
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [status]);
+
+  // Format seconds to MM:SS display
+  const formatDuration = (seconds: number): string => {
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+  };
+
   // Update logs every 2 seconds when debug panel is open
   useEffect(() => {
     if (!showDebug) return;
@@ -62,7 +148,8 @@ export default function ChatInterface() {
     return () => clearInterval(intervalId);
   }, [showDebug]);
 
-  const handleSendMessage = (e: React.FormEvent) => {
+  // Handle sending a message with proper event typing
+  const handleSendMessage = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     if (inputMessage.trim() === '') return;
     
@@ -95,6 +182,13 @@ export default function ChatInterface() {
           </div>
         </div>
         <div className="flex space-x-4 items-center">
+          <button
+            onClick={() => setSoundEnabled(!soundEnabled)}
+            className="text-xs bg-gray-800/50 hover:bg-gray-700/70 px-3 py-1.5 rounded-full transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+            title={soundEnabled ? "Mute sounds" : "Enable sounds"}
+          >
+            {soundEnabled ? "🔊" : "🔇"}
+          </button>
           <div className="flex space-x-2 items-center rounded-full bg-gray-800/50 px-3 py-1.5">
             <div className={`h-2.5 w-2.5 rounded-full ${
               status === 'connected' ? 'bg-green-500 animate-pulse' : 
@@ -103,6 +197,11 @@ export default function ChatInterface() {
             <div className="text-sm font-medium">
               {status === 'connected' ? 'Connected' : 
                status === 'looking' ? 'Looking for a stranger...' : 'Disconnected'}
+              {status === 'connected' && (
+                <span className="ml-2 bg-black/30 px-2 py-0.5 rounded-full font-mono text-xs text-green-300">
+                  {formatDuration(chatDuration)}
+                </span>
+              )}
             </div>
           </div>
           <button 
@@ -139,7 +238,7 @@ export default function ChatInterface() {
             <p className="font-bold text-white text-center mb-2">Not connecting with other browsers?</p>
             <p className="text-red-200 mb-2">
               Each browser needs a <span className="font-bold">unique identity</span>. Click the button below
-              to reset your browser's identity, then try connecting again.
+              to reset your browser&apos;s identity, then try connecting again.
             </p>
             <div className="flex justify-center space-x-3">
               <button
@@ -298,8 +397,8 @@ export default function ChatInterface() {
                     <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
                   </svg>
                   <p className="text-xs text-yellow-300">
-                    If you're using private/incognito mode in one browser, matchmaking will still work
-                    since we're using the Nostr network to connect users.
+                    If you&apos;re using private/incognito mode in one browser, matchmaking will still work
+                    since we&apos;re using the Nostr network to connect users.
                   </p>
                 </div>
               </div>
@@ -310,8 +409,8 @@ export default function ChatInterface() {
                     <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2h-1V9a1 1 0 00-1-1z" clipRule="evenodd" />
                   </svg>
                   <p className="text-xs text-blue-300">
-                    If connections aren't working, click the "Debug" button in the top right
-                    to see what's happening behind the scenes.
+                    If connections aren&apos;t working, click the &quot;Debug&quot; button in the top right
+                    to see what&apos;s happening behind the scenes.
                   </p>
                 </div>
               </div>
@@ -324,8 +423,8 @@ export default function ChatInterface() {
                   <div>
                     <p className="text-xs text-white font-bold mb-2">Still not connecting?</p>
                     <ol className="text-left list-decimal pl-4 text-xs text-red-300 space-y-1">
-                      <li>Click the "Debug" button in the top right</li>
-                      <li>Click "Reset All Data and Restart" in <strong>all browser windows</strong></li>
+                      <li>Click the &quot;Debug&quot; button in the top right</li>
+                      <li>Click &quot;Reset All Data and Restart&quot; in <strong>all browser windows</strong></li>
                       <li>Try again - each browser needs a unique identity</li>
                     </ol>
                   </div>
@@ -360,13 +459,42 @@ export default function ChatInterface() {
               )}
               <div className={`flex ${message.sender === 'me' ? 'justify-end' : 'justify-start'}`}>
                 <div 
-                  className={`rounded-2xl px-4 py-2 max-w-[70%] break-words shadow-sm ${
+                  className={`relative rounded-2xl px-4 py-2 max-w-[70%] break-words shadow-sm ${
                     message.sender === 'me' 
                       ? 'bg-gradient-to-r from-purple-600 to-purple-700 text-white' 
                       : 'bg-gray-800/70 backdrop-blur-sm text-white border border-gray-700/50'
                   } ${isFirst ? (message.sender === 'me' ? 'rounded-tr-sm' : 'rounded-tl-sm') : ''}`}
                 >
                   {message.content}
+                  
+                  {/* Reaction button */}
+                  {message.sender === 'partner' && (
+                    <button 
+                      onClick={() => {
+                        setSelectedMessageId(selectedMessageId === message.id ? null : message.id);
+                        setShowEmojiPicker(selectedMessageId !== message.id);
+                      }}
+                      className="absolute -right-7 top-1/2 transform -translate-y-1/2 text-xs opacity-50 hover:opacity-100 p-1"
+                      title="React to message"
+                    >
+                      😀
+                    </button>
+                  )}
+                  
+                  {/* Emoji picker popup */}
+                  {showEmojiPicker && selectedMessageId === message.id && (
+                    <div className="absolute right-0 -bottom-10 bg-gray-900/90 backdrop-blur-sm rounded-lg p-1 flex space-x-1 shadow-lg border border-gray-700/50 z-10">
+                      {quickEmojis.map(emoji => (
+                        <button 
+                          key={emoji} 
+                          onClick={() => addReaction(message.id, emoji)}
+                          className="hover:bg-gray-700/50 p-1 rounded transition-colors"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
