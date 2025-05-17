@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { 
   generateKeypair, 
   createPool, 
@@ -108,10 +108,54 @@ export function useNostrMatchmaking() {
     if (!poolRef.current) {
       poolRef.current = createPool();
       logger.info('Created new Nostr pool with relays', { relays: DEFAULT_RELAYS });
+      
+      // Store the pool reference globally for diagnostics
+      if (typeof window !== 'undefined') {
+        window._omestrPoolRef = poolRef;
+      }
     }
     
     return { newKeypair, newSessionId };
   }, []);
+  
+  // Add a function to check and restore relay connections
+  const checkRelayConnections = useCallback(() => {
+    if (!poolRef.current) return;
+    
+    // Check if we have any connected relays
+    const connectedCount = poolRef.current.connectedRelays.size;
+    
+    if (connectedCount === 0) {
+      logger.warn('No connected relays detected, attempting to reconnect');
+      
+      // Try connecting to all relays again
+      poolRef.current.connect(DEFAULT_RELAYS);
+      
+      // Set a timer to verify connections were established
+      setTimeout(() => {
+        const newConnectedCount = poolRef.current?.connectedRelays.size || 0;
+        if (newConnectedCount === 0) {
+          logger.error('Failed to connect to any relays after retry');
+          setError('Failed to connect to any Nostr relays. Please check your network connection.');
+        } else {
+          logger.info(`Successfully reconnected to ${newConnectedCount} relays`);
+          setError(null);
+        }
+      }, 5000);
+    }
+  }, []);
+  
+  // Periodically check relay connections
+  useEffect(() => {
+    // Skip if not looking or connecting
+    if (status !== 'looking' && status !== 'connecting') return;
+    
+    const interval = setInterval(() => {
+      checkRelayConnections();
+    }, 15000); // Check every 15 seconds
+    
+    return () => clearInterval(interval);
+  }, [status, checkRelayConnections]);
   
   // Subscribe to chat with a partner
   const subscribeToChatWithPartner = useCallback((partnerPubkey: string, chatSessionId: string) => {

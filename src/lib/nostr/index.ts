@@ -2,6 +2,17 @@
 export const OMESTR_KIND = 30078; // Custom kind for matchmaking events
 import { logger } from './logger';
 
+// Global type definition for the window object
+declare global {
+  interface Window {
+    _omestrPoolRef?: {
+      current?: {
+        connectedRelays: Set<string>;
+      }
+    }
+  }
+}
+
 // Default relays to connect to - increased list of reliable relays
 export const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
@@ -426,6 +437,11 @@ export class SimplePool {
       
       // Start periodic relay health checks
       this.startRelayHealthChecks();
+      
+      // Expose the pool reference for diagnostics
+      if (!window._omestrPoolRef) {
+        window._omestrPoolRef = { current: this };
+      }
     }
   }
   
@@ -649,7 +665,27 @@ export class SimplePool {
     // Make sure we have at least one connected relay
     if (this.connectedRelays.size === 0) {
       logger.warn('No connected relays to publish to, attempting to reconnect...');
-      this.verifyRelayConnections();
+      
+      // Try to reconnect to all relays
+      this.relays.forEach(relay => {
+        try {
+          const ws = new WebSocket(relay);
+          
+          ws.onopen = () => {
+            this.connectedRelays.add(relay);
+            logger.info(`Successfully connected to relay during publish: ${relay}`);
+          };
+          
+          ws.onerror = () => {
+            logger.warn(`Failed to connect to relay during publish: ${relay}`);
+          };
+        } catch (error) {
+          logger.error(`Error connecting to ${relay} during publish`, error);
+        }
+      });
+      
+      // Wait briefly for connections to establish
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
     
     // In a real implementation, this would publish to actual WebSockets

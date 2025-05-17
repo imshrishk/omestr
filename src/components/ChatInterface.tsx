@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { useNostrMatchmaking } from '../lib/hooks/useNostrMatchmaking';
 import { logger } from '../lib/nostr/logger';
 import { dumpLocalStorage } from '../lib/nostr/index';
+import ConnectionDiagnostics from './ConnectionDiagnostics';
 
 // Define log entry type
 interface LogEntry {
@@ -25,6 +26,8 @@ export default function ChatInterface() {
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [showEmojiPicker, setShowEmojiPicker] = useState<boolean>(false);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
+  const [connectedRelays, setConnectedRelays] = useState<Set<string>>(new Set());
+  const [browserId, setBrowserId] = useState<string>('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { 
@@ -139,6 +142,20 @@ export default function ChatInterface() {
     const intervalId = setInterval(() => {
       setLogs(logger.getLogs().slice(-100));
       setStorageData(dumpLocalStorage());
+      
+      // Get connected relays from the pool if available
+      if (typeof window !== 'undefined' && window._omestrPoolRef?.current?.connectedRelays) {
+        setConnectedRelays(window._omestrPoolRef.current.connectedRelays);
+      }
+      
+      // Get browser instance ID
+      if (typeof window !== 'undefined') {
+        const storageKey = 'omestr_browser_instance_id';
+        const id = sessionStorage.getItem(storageKey);
+        if (id) {
+          setBrowserId(id);
+        }
+      }
     }, 2000);
     
     // Initial load
@@ -167,6 +184,12 @@ export default function ChatInterface() {
       resetAll();
       setStorageData(null);
     }
+  };
+
+  const handleRestartMatchmaking = () => {
+    // Force restart the looking process
+    resetAll();
+    setTimeout(() => startLooking(), 500);
   };
 
   return (
@@ -234,7 +257,16 @@ export default function ChatInterface() {
             </div>
           </div>
           
-          <div className="mb-4 p-3 bg-red-900/30 rounded-xl border border-red-500/20">
+          {/* Connection Diagnostics Panel */}
+          <ConnectionDiagnostics 
+            onClearStorage={handleClearStorage}
+            onRestartMatchmaking={handleRestartMatchmaking}
+            connectionStatus={status}
+            browserId={browserId}
+            connectedRelays={connectedRelays}
+          />
+          
+          <div className="mt-4 mb-4 p-3 bg-red-900/30 rounded-xl border border-red-500/20">
             <p className="font-bold text-white text-center mb-2">Not connecting with other browsers?</p>
             <p className="text-red-200 mb-2">
               Each browser needs a <span className="font-bold">unique identity</span>. Click the button below
@@ -276,11 +308,7 @@ export default function ChatInterface() {
             {status === 'looking' && (
               <div className="flex justify-center mt-2">
                 <button
-                  onClick={() => {
-                    // Force restart the looking process
-                    resetAll();
-                    setTimeout(() => startLooking(), 500);
-                  }}
+                  onClick={handleRestartMatchmaking}
                   className="bg-green-500/80 hover:bg-green-600/80 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-200"
                 >
                   Force Restart Matchmaking
