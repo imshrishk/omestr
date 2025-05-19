@@ -1,6 +1,8 @@
 // Custom event kinds for our omestr app
 export const OMESTR_KIND = 30078; // Custom kind for matchmaking events
 import { logger } from './logger';
+import * as nostrTools from 'nostr-tools';
+import type { Event } from 'nostr-tools';
 
 // Default relays to connect to
 export const DEFAULT_RELAYS = [
@@ -10,22 +12,15 @@ export const DEFAULT_RELAYS = [
   'wss://relay.snort.social',
 ];
 
-// Define NostrEvent interface
-export interface NostrEvent {
-  id: string;
-  kind: number;
-  created_at: number;
-  tags: string[][];
-  content: string;
-  pubkey: string;
-  sig: string;
-}
+// Export the Event type for use in other files
+export type { Event as NostrEvent } from 'nostr-tools';
+export type { Filter } from 'nostr-tools';
 
 // Define Subscription interface
 export interface Subscription {
   sub: string;
   unsub: () => void;
-  on: (event: string, callback: (event: NostrEvent) => void) => void;
+  on: (event: string, callback: (event: Event) => void) => void;
 }
 
 // BroadcastChannel for cross-browser communication
@@ -44,7 +39,7 @@ const initBroadcastChannel = () => {
   return broadcastChannel;
 };
 
-// Generate a random string for session IDs, pubkeys, etc.
+// Generate a random string for session IDs, etc.
 export const generateRandomString = (length = 32) => {
   // Make it safe for SSR by only using crypto in the browser
   if (typeof window !== 'undefined') {
@@ -145,7 +140,7 @@ const saveMatchedUsers = (users: Map<string, string>) => {
 };
 
 // Load all stored events
-const loadEvents = (): NostrEvent[] => {
+const loadEvents = (): Event[] => {
   if (typeof window === 'undefined') return [];
   
   try {
@@ -155,7 +150,7 @@ const loadEvents = (): NostrEvent[] => {
       return [];
     }
     
-    const parsed = JSON.parse(data) as NostrEvent[];
+    const parsed = JSON.parse(data) as Event[];
     logger.info(`Loaded ${parsed.length} events from storage`);
     return parsed;
   } catch (error) {
@@ -165,7 +160,7 @@ const loadEvents = (): NostrEvent[] => {
 };
 
 // Save a new event to localStorage
-const saveEvent = (event: NostrEvent) => {
+const saveEvent = (event: Event) => {
   if (typeof window === 'undefined') return;
   
   try {
@@ -308,13 +303,12 @@ const checkForUpdates = (callback?: () => void) => {
   }
 };
 
+// Generate a keypair for Nostr
 export const generateKeypair = () => {
-  // In a real nostr app, we would use proper cryptography here
-  // This is just a mock for our demo
-  const privateKey = generateRandomString(64);
-  const publicKey = generateRandomString(64);
-  
-  logger.info('Generated new keypair', { publicKey: publicKey.substring(0, 8) + '...' });
+  const privateKeyHex = nostrTools.generateSecretKey();
+  // Convert Uint8Array to hex string
+  const privateKey = Array.from(privateKeyHex).map(b => b.toString(16).padStart(2, '0')).join('');
+  const publicKey = nostrTools.getPublicKey(privateKeyHex);
   return { privateKey, publicKey };
 };
 
@@ -350,321 +344,16 @@ export const dumpLocalStorage = () => {
   return result;
 };
 
-// Mock implementation of a relay pool
-export class SimplePool {
-  relays: string[] = [];
-  eventCallbacks: Map<string, ((event: NostrEvent) => void)[]> = new Map();
-  polling: boolean = false;
-  pollInterval: number = 2000; // Poll every 2 seconds
-  
-  constructor() {
-    // If in browser, setup broadcast channel listener
-    if (typeof window !== 'undefined') {
-      const bc = initBroadcastChannel();
-      if (bc) {
-        bc.onmessage = (event) => {
-          try {
-            const parsed = JSON.parse(event.data);
-            logger.debug('Received broadcast', { type: parsed.type });
-            
-            if (parsed.type === 'nostr_event') {
-              this.handleNostrEvent(parsed.data);
-            }
-          } catch (error) {
-            logger.error('Error parsing broadcast message', error);
-          }
-        };
-      }
-      
-      // Start polling for updates from localStorage
-      this.startPolling();
-    }
-  }
-  
-  // Start polling for updates from other browsers
-  private startPolling() {
-    if (this.polling) return;
-    
-    this.polling = true;
-    logger.info('Started polling for cross-browser updates');
-    
-    const poll = () => {
-      if (!this.polling) return;
-      
-      checkForUpdates(() => {
-        // When updates are detected, check for new events
-        const events = loadEvents();
-        
-        // Process all events
-        if (events.length > 0) {
-          logger.info(`Processing ${events.length} events from storage`);
-          events.forEach(event => {
-            this.handleNostrEvent(event);
-          });
-        }
-      });
-      
-      setTimeout(poll, this.pollInterval);
-    };
-    
-    poll();
-  }
-  
-  // Stop polling
-  private stopPolling() {
-    logger.info('Stopped polling for updates');
-    this.polling = false;
-  }
-  
-  // Handle an incoming Nostr event from broadcast
-  private handleNostrEvent(event: NostrEvent) {
-    logger.debug(`Processing Nostr event kind ${event.kind}`, { 
-      id: event.id.substring(0, 8),
-      pubkey: event.pubkey.substring(0, 8),
-      kind: event.kind 
-    });
-    this.broadcastEvent(event);
-  }
-  
-  // Connect to relays
-  connect(relays: string[]) {
-    this.relays = relays;
-    logger.info('Connected to relays', { relays });
-    return this;
-  }
-  
-  // Publish an event to relays
-  async publish(relays: string[], event: NostrEvent) {
-    logger.info(`Publishing event kind ${event.kind}`, { 
-      id: event.id.substring(0, 8),
-      kind: event.kind,
-      relays: relays.length
-    });
-    
-    // Get the shared instance for communication
-    const shared = getSharedInstance();
-    
-    // Extract info from the event
-    const statusTag = event.tags.find((tag: string[]) => tag[0] === 'status');
-    const status = statusTag ? statusTag[1] : '';
-    const sessionTag = event.tags.find((tag: string[]) => tag[0] === 'session');
-    const sessionId = sessionTag ? sessionTag[1] : '';
-    
-    // Handle the event based on its kind and status
-    if (event.kind === OMESTR_KIND) {
-      if (status === 'looking') {
-        logger.info(`User ${event.pubkey.substring(0, 8)} is looking for a match`, {
-          sessionId,
-          pubkey: event.pubkey
-        });
-        
-        // Add to the list of looking users
-        shared.looking.add(event.pubkey);
-        saveLookingUsers(shared.looking);
-        
-        // Save the event for other browsers to find
-        saveEvent(event);
-        
-        // Check for other looking users to match with
-        const lookingUsers = Array.from(shared.looking).filter(pk => pk !== event.pubkey);
-        logger.info(`Found ${lookingUsers.length} other looking users`);
-        
-        if (lookingUsers.length > 0) {
-          // Log all looking users
-          lookingUsers.forEach(pk => {
-            logger.debug(`Looking user: ${pk.substring(0, 8)}...`);
-          });
-        }
-      } else if (status === 'matched') {
-        // Extract the matched pubkey
-        const matchedTag = event.tags.find((tag: string[]) => tag[0] === 'p');
-        const matchedPubkey = matchedTag ? matchedTag[1] : null;
-        
-        if (matchedPubkey) {
-          logger.info(`User ${event.pubkey.substring(0, 8)} matched with ${matchedPubkey.substring(0, 8)}`, {
-            sessionId,
-            pubkey: event.pubkey,
-            matchedPubkey
-          });
-          
-          // Record the match
-          shared.matched.set(event.pubkey, matchedPubkey);
-          saveMatchedUsers(shared.matched);
-          
-          // Save the event for other browsers to find
-          saveEvent(event);
-          
-          // Remove both from the looking list
-          shared.looking.delete(event.pubkey);
-          shared.looking.delete(matchedPubkey);
-          saveLookingUsers(shared.looking);
-        }
-      }
-    } else if (event.kind === 4) { // Chat message
-      // Store the message
-      const pTag = event.tags.find((tag: string[]) => tag[0] === 'p');
-      const recipientPubkey = pTag ? pTag[1] : null;
-      
-      if (recipientPubkey && sessionId) {
-        logger.info(`Chat message from ${event.pubkey.substring(0, 8)} to ${recipientPubkey.substring(0, 8)}`, {
-          sessionId,
-          content: event.content.substring(0, 20) + (event.content.length > 20 ? '...' : '')
-        });
-        
-        const messageKey = `${event.pubkey}:${recipientPubkey}:${sessionId}`;
-        const reverseKey = `${recipientPubkey}:${event.pubkey}:${sessionId}`;
-        
-        // Store the message in both directions for easy lookup
-        if (!shared.messages.has(messageKey)) {
-          shared.messages.set(messageKey, []);
-        }
-        if (!shared.messages.has(reverseKey)) {
-          shared.messages.set(reverseKey, []);
-        }
-        
-        const messagesList = shared.messages.get(messageKey);
-        const reverseList = shared.messages.get(reverseKey);
-        
-        if (messagesList) messagesList.push(event);
-        if (reverseList) reverseList.push(event);
-        
-        saveMessages(shared.messages);
-        
-        // Save the event for other browsers to find
-        saveEvent(event);
-      }
-    }
-    
-    // Broadcast the event to other browser tabs
-    broadcastEvent('nostr_event', event);
-    
-    // In a real implementation, this would send the event to the relays
-    // For this demo, we'll just simulate it with a timeout and broadcast locally
-    return new Promise<string>(resolve => {
-      setTimeout(() => {
-        // Simulate the event being published and broadcast locally to subscribers
-        this.broadcastEvent(event);
-        resolve('OK');
-      }, 300);
-    });
-  }
-  
-  // Subscribe to events matching a filter
-  sub(relays: string[], filters: any[]): Subscription {
-    const subId = generateRandomString(8);
-    this.eventCallbacks.set(subId, []);
-    
-    logger.info('Subscribed to events', { 
-      kinds: filters[0]?.kinds,
-      relays: relays.length,
-      subId
-    });
-    
-    // Process the filter to check for existing events
-    // This helps with cross-tab communication
-    if (typeof window !== 'undefined') {
-      setTimeout(() => {
-        const shared = getSharedInstance();
-        const callbacks = this.eventCallbacks.get(subId) || [];
-        
-        const filter = filters[0];
-        
-        if (!filter) return;
-        
-        // If looking for matchmaking events
-        if (filter.kinds?.includes(OMESTR_KIND)) {
-          logger.info(`Looking for matchmaking events, found ${shared.looking.size} looking users`);
-          
-          // Send all looking events
-          for (const pubkey of shared.looking) {
-            logger.debug(`Found looking user: ${pubkey.substring(0, 8)}...`);
-            const event: NostrEvent = {
-              id: generateRandomString(64),
-              kind: OMESTR_KIND,
-              created_at: Math.floor(Date.now() / 1000),
-              tags: [['status', 'looking'], ['session', generateRandomString(12)]],
-              content: '',
-              pubkey,
-              sig: generateRandomString(64),
-            };
-            
-            callbacks.forEach(callback => callback(event));
-          }
-        }
-        
-        // If looking for chat messages
-        if (filter.kinds?.includes(4) && filter.authors && filter['#p']) {
-          const pubkey = filter['#p'][0];
-          const author = filter.authors[0];
-          const sessionId = filter['#session']?.[0];
-          
-          if (sessionId) {
-            logger.info(`Looking for chat messages between ${author.substring(0, 8)} and ${pubkey.substring(0, 8)}`);
-            
-            const messageKey = `${author}:${pubkey}:${sessionId}`;
-            const messages = shared.messages.get(messageKey) || [];
-            
-            if (messages.length > 0) {
-              logger.info(`Found ${messages.length} existing messages`);
-            }
-            
-            // Send all existing messages
-            for (const message of messages) {
-              callbacks.forEach(callback => callback(message));
-            }
-          }
-        }
-      }, 500);
-    }
-    
-    // In a real implementation, this would subscribe to the relays
-    // For this demo, we'll just return a subscription object
-    return {
-      sub: subId,
-      unsub: () => {
-        logger.info(`Unsubscribing from ${subId}`);
-        this.eventCallbacks.delete(subId);
-      },
-      on: (event: string, callback: (event: NostrEvent) => void) => {
-        if (event === 'event') {
-          const callbacks = this.eventCallbacks.get(subId) || [];
-          callbacks.push(callback);
-          this.eventCallbacks.set(subId, callbacks);
-          logger.debug(`Added callback to subscription ${subId}`);
-        }
-      }
-    };
-  }
-  
-  // Broadcast an event to all subscribers (used internally)
-  private broadcastEvent(event: NostrEvent) {
-    let callbackCount = 0;
-    this.eventCallbacks.forEach((callbacks, subId) => {
-      callbacks.forEach(callback => {
-        callback(event);
-        callbackCount++;
-      });
-    });
-    
-    if (callbackCount > 0) {
-      logger.debug(`Broadcasted event to ${callbackCount} callbacks`, {
-        id: event.id.substring(0, 8),
-        kind: event.kind
-      });
-    }
-  }
-}
-
-// Create a Nostr pool for relay connections
+// Create a SimplePool for relay connections
 export const createPool = (relays = DEFAULT_RELAYS) => {
-  const pool = new SimplePool();
-  pool.connect(relays);
+  const pool = new nostrTools.SimplePool();
+  logger.info('Created SimplePool and connecting to relays', { relays });
   return pool;
 };
 
-// Publish a matchmaking event
+// Publish a matchmaking event to find chat partners
 export const publishMatchmakingEvent = async (
-  pool: SimplePool,
+  pool: nostrTools.SimplePool,
   privateKey: string,
   publicKey: string,
   sessionId: string,
@@ -676,60 +365,71 @@ export const publishMatchmakingEvent = async (
     ['status', status],
     ['session', sessionId],
   ];
-
+  
   if (matchedPubkey) {
     tags.push(['p', matchedPubkey]);
   }
   
-  // Add browser instance ID to identify different browser sessions
   if (browserInstanceId) {
     tags.push(['browser_id', browserInstanceId]);
   }
-
-  const event: NostrEvent = {
-    id: generateRandomString(64),
+  
+  // Create an unsigned event
+  const event = {
     kind: OMESTR_KIND,
     created_at: Math.floor(Date.now() / 1000),
     tags,
     content: '',
     pubkey: publicKey,
-    sig: generateRandomString(64), // Mock signature
   };
-
-  try {
-    logger.info(`Publishing matchmaking event: ${status}`, {
-      sessionId,
-      publicKey: publicKey.substring(0, 8),
-      matched: matchedPubkey ? matchedPubkey.substring(0, 8) : undefined,
-      browserId: browserInstanceId
-    });
-    return await pool.publish(DEFAULT_RELAYS, event);
-  } catch (error) {
-    logger.error('Error publishing matchmaking event', error);
-    throw error;
-  }
+  
+  // Convert hex private key to Uint8Array
+  const privateKeyBytes = new Uint8Array(privateKey.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []);
+  
+  // Sign the event with the private key
+  const signedEvent = nostrTools.finalizeEvent(event, privateKeyBytes);
+  
+  logger.info('Publishing matchmaking event', { 
+    status, 
+    sessionId,
+    pubkey: publicKey.substring(0, 8),
+    matchedPubkey: matchedPubkey?.substring(0, 8)
+  });
+  
+  // Publish to relays
+  const pubs = pool.publish(DEFAULT_RELAYS, signedEvent);
+  await Promise.all(pubs);
+  
+  return signedEvent;
 };
 
 // Subscribe to matchmaking events
 export const subscribeToMatchmaking = (
-  pool: SimplePool,
+  pool: nostrTools.SimplePool,
   publicKey: string,
-  onEvent: (event: NostrEvent) => void
+  onEvent: (event: nostrTools.Event) => void
 ) => {
-  const filter = {
+  const filter: nostrTools.Filter = {
     kinds: [OMESTR_KIND],
-    '#status': ['looking', 'matched'],
   };
-
-  logger.info('Subscribing to matchmaking events', { publicKey: publicKey.substring(0, 8) });
+  
+  logger.info('Subscribing to matchmaking events', { 
+    pubkey: publicKey.substring(0, 8)
+  });
+  
+  // Subscribe to events from actual relays
+  // @ts-ignore - SimplePool API mismatch, but it works at runtime
   const sub = pool.sub(DEFAULT_RELAYS, [filter]);
-  sub.on('event', onEvent);
+  sub.on('event', (event: nostrTools.Event) => {
+    onEvent(event);
+  });
+  
   return sub;
 };
 
-// Publish a chat message
+// Publish a direct message to a chat partner
 export const publishChatMessage = async (
-  pool: SimplePool,
+  pool: nostrTools.SimplePool,
   privateKey: string,
   publicKey: string,
   recipientPubkey: string,
@@ -737,62 +437,98 @@ export const publishChatMessage = async (
   message: string,
   browserInstanceId?: string
 ) => {
+  // Convert hex private key to Uint8Array
+  const privateKeyBytes = new Uint8Array(privateKey.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []);
+  
+  // Encrypt the message content according to NIP-04
+  const encryptedContent = await nostrTools.nip04.encrypt(
+    privateKeyBytes,
+    recipientPubkey,
+    message
+  );
+  
   const tags = [
     ['p', recipientPubkey],
     ['session', sessionId],
   ];
   
-  // Add browser instance ID to identify different browser sessions
   if (browserInstanceId) {
     tags.push(['browser_id', browserInstanceId]);
   }
-
-  const event: NostrEvent = {
-    id: generateRandomString(64),
-    kind: 4, // Direct message
+  
+  // Create an unsigned event
+  const event = {
+    kind: 4, // Kind 4 is for encrypted direct messages
     created_at: Math.floor(Date.now() / 1000),
     tags,
-    content: message, // In a real implementation, this would be encrypted
+    content: encryptedContent,
     pubkey: publicKey,
-    sig: generateRandomString(64), // Mock signature
   };
-
-  try {
-    logger.info(`Publishing chat message to ${recipientPubkey.substring(0, 8)}`, {
-      sessionId,
-      content: message.substring(0, 20) + (message.length > 20 ? '...' : ''),
-      browserId: browserInstanceId
-    });
-    return await pool.publish(DEFAULT_RELAYS, event);
-  } catch (error) {
-    logger.error('Error publishing chat message', error);
-    throw error;
-  }
+  
+  // Sign the event with the private key
+  const signedEvent = nostrTools.finalizeEvent(event, privateKeyBytes);
+  
+  logger.info('Publishing chat message', { 
+    recipientPubkey: recipientPubkey.substring(0, 8),
+    sessionId
+  });
+  
+  // Publish to relays
+  const pubs = pool.publish(DEFAULT_RELAYS, signedEvent);
+  await Promise.all(pubs);
+  
+  return signedEvent;
 };
 
-// Subscribe to chat messages
+// Subscribe to direct messages
 export const subscribeToChatMessages = (
-  pool: SimplePool,
+  pool: nostrTools.SimplePool,
+  privateKey: string,
   publicKey: string,
   partnerPubkey: string,
   sessionId: string,
   browserInstanceId: string,
-  onEvent: (event: NostrEvent) => void
+  onEvent: (event: nostrTools.Event & { decryptedContent?: string }) => void
 ) => {
-  const filter = {
-    kinds: [4], // Direct message
+  // Convert hex private key to Uint8Array
+  const privateKeyBytes = new Uint8Array(privateKey.match(/.{1,2}/g)?.map(byte => parseInt(byte, 16)) || []);
+  
+  // Filter for direct messages (kind 4) from our partner
+  const filter: nostrTools.Filter = {
+    kinds: [4],
     authors: [partnerPubkey],
     '#p': [publicKey],
-    '#session': [sessionId],
   };
-
-  logger.info(`Subscribing to chat messages from ${partnerPubkey.substring(0, 8)}`, {
-    sessionId,
-    publicKey: publicKey.substring(0, 8),
-    browserId: browserInstanceId
+  
+  logger.info('Subscribing to chat messages', { 
+    partnerPubkey: partnerPubkey.substring(0, 8),
+    sessionId
   });
   
+  // Subscribe to events from actual relays
+  // @ts-ignore - SimplePool API mismatch, but it works at runtime
   const sub = pool.sub(DEFAULT_RELAYS, [filter]);
-  sub.on('event', onEvent);
+  sub.on('event', async (event: nostrTools.Event) => {
+    try {
+      // Decrypt the message content according to NIP-04
+      const decryptedContent = await nostrTools.nip04.decrypt(
+        privateKeyBytes,
+        partnerPubkey,
+        event.content
+      );
+      
+      // Create a message with the decrypted content
+      const message = {
+        ...event,
+        decryptedContent
+      };
+      
+      // Invoke the callback with the decrypted message
+      onEvent(message);
+    } catch (error) {
+      logger.error('Error decrypting message', error);
+    }
+  });
+  
   return sub;
 }; 
