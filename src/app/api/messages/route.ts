@@ -108,11 +108,11 @@ export async function GET(request: Request) {
       );
     }
     
-    // Find messages where this user is the receiver
+    // Find messages where this user is the receiver OR sender
     let userMessages = messages.filter(message => 
-      message.receiverId === userId
+      message.receiverId === userId || message.senderId === userId
     );
-    console.log(`[Messages API] Found ${userMessages.length} messages where user is receiver`);
+    console.log(`[Messages API] Found ${userMessages.length} messages where user is sender or receiver`);
     
     // If chatSessionId is provided, filter messages by chatSessionId
     if (chatSessionId) {

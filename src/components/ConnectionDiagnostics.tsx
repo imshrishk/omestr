@@ -57,13 +57,13 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
             ws.close();
             reject(new Error('Connection failed'));
           };
-        }).catch(() => {
+        }).catch((_err) => {
           // Error handling done in the promise
         });
-      } catch (error) {
+      } catch (_error) {
         results[relay] = { status: 'error' };
         setPingResults({ ...results });
-        logger.error(`Error testing relay ${relay}`, error);
+        logger.error(`Error testing relay ${relay}`);
       }
     }
   };
@@ -99,7 +99,7 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
           });
           
           if (relaySuccess) break;
-        } catch (error) {
+        } catch (_error) {
           // Try next relay
         }
       }
@@ -118,9 +118,9 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
       
       try {
         localStorage.setItem(testKey, testValue);
-        const readValue = localStorage.setItem(testKey, testValue);
+        localStorage.getItem(testKey); // Just check we can read it
         localStorage.removeItem(testKey);
-      } catch (error) {
+      } catch (_error) {
         setTestResult({ 
           success: false, 
           message: "LocalStorage is not working correctly. Check browser privacy settings." 
@@ -130,7 +130,6 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
       
       // Generate test IDs
       const testPubkey = "test_" + Math.random().toString(36).substring(2);
-      const testSessionId = "test_" + Math.random().toString(36).substring(2);
       
       // Test 3: Add and remove from looking users
       try {
@@ -159,7 +158,7 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
         // Remove our test pubkey
         const finalUsers = updatedUsers.filter(id => id !== testPubkey);
         localStorage.setItem(lookingUsersKey, JSON.stringify(finalUsers));
-      } catch (error) {
+      } catch (_error) {
         setTestResult({ 
           success: false, 
           message: "Error while testing looking users storage. Check browser console." 
@@ -173,12 +172,12 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
         message: "All connectivity tests passed! Cross-device matchmaking should work." 
       });
       
-    } catch (error) {
+    } catch (_error) {
       setTestResult({ 
         success: false, 
         message: "An error occurred during testing. Check browser console." 
       });
-      console.error("Cross-device test error:", error);
+      console.error("Cross-device test error");
     }
   };
   
@@ -222,8 +221,8 @@ const ConnectionDiagnostics: React.FC<ConnectionDiagnosticsProps> = ({
         <div className="mb-4 p-3 bg-blue-900/30 rounded-lg border border-blue-500/30 text-blue-100">
           <h4 className="font-bold mb-2">Fixing Connection Issues:</h4>
           <ol className="list-decimal pl-5 space-y-1 text-sm">
-            <li>Click "Reset All Data" on <strong>all</strong> devices</li>
-            <li>After reset, click "Restart Matchmaking" on all devices</li>
+            <li>Click &quot;Reset All Data&quot; on <strong>all</strong> devices</li>
+            <li>After reset, click &quot;Restart Matchmaking&quot; on all devices</li>
             <li>Use completely different browsers, not just different tabs</li>
             <li>If on Vercel, try using mobile data on one device instead of Wi-Fi</li>
             <li>Check relay connections below - at least one relay must be green</li>

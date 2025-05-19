@@ -2,25 +2,12 @@
 export const OMESTR_KIND = 30078; // Custom kind for matchmaking events
 import { logger } from './logger';
 
-// Global type definition for the window object
-declare global {
-  interface Window {
-    _omestrPoolRef?: {
-      current?: {
-        connectedRelays: Set<string>;
-      }
-    }
-  }
-}
-
-// Default relays to connect to - increased list of reliable relays
+// Default relays to connect to
 export const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
   'wss://relay.nostr.band',
-  'wss://nostr.plebchain.org',
   'wss://nos.lol',
   'wss://relay.snort.social',
-  'wss://relay.current.fyi'
 ];
 
 // Define NostrEvent interface
@@ -49,13 +36,6 @@ const initBroadcastChannel = () => {
   if (typeof window !== 'undefined' && !broadcastChannel) {
     try {
       broadcastChannel = new BroadcastChannel('omestr_channel');
-      broadcastChannel.onmessage = (event) => {
-        const { type, data } = JSON.parse(event.data);
-        if (type === 'storage_update') {
-          logger.debug('Received storage update from other tab');
-          checkForUpdates();
-        }
-      };
       logger.info('BroadcastChannel initialized successfully');
     } catch (error) {
       logger.error('BroadcastChannel initialization failed', error);
@@ -106,41 +86,8 @@ const loadLookingUsers = (): Set<string> => {
     }
     
     const parsed = JSON.parse(data) as string[];
-    
-    // Clean up stale looking users - check if they have expired
-    const currentTime = Date.now();
-    const validUsers = parsed.filter(pubkey => {
-      const userLastActivity = localStorage.getItem(`${KEY_PREFIX}user_activity_${pubkey}`);
-      if (!userLastActivity) return false;
-      
-      const lastActivity = parseInt(userLastActivity, 10);
-      // More aggressive timeout - 30 seconds of inactivity is enough to consider user stale
-      const isValid = currentTime - lastActivity < 30000; // 30 seconds stale check 
-      
-      if (!isValid) {
-        // Remove stale user activity data
-        localStorage.removeItem(`${KEY_PREFIX}user_activity_${pubkey}`);
-        
-        // Remove browser instance ID association
-        const browserKey = `omestr_browser_${pubkey}`;
-        if (localStorage.getItem(browserKey)) {
-          localStorage.removeItem(browserKey);
-        }
-        
-        logger.info(`Removed stale user: ${pubkey.substring(0, 8)}`);
-      }
-      
-      return isValid;
-    });
-    
-    // If the valid users count is different, update the storage
-    if (validUsers.length !== parsed.length) {
-      localStorage.setItem(STORAGE_KEYS.LOOKING_USERS, JSON.stringify(validUsers));
-      localStorage.setItem(STORAGE_KEYS.LAST_UPDATE, Date.now().toString());
-    }
-    
-    logger.info(`Loaded ${validUsers.length} valid looking users from storage (filtered ${parsed.length - validUsers.length} stale)`, { users: validUsers });
-    return new Set<string>(validUsers);
+    logger.info(`Loaded ${parsed.length} looking users from storage`, { users: parsed });
+    return new Set<string>(parsed);
   } catch (error) {
     logger.error('Error loading looking users from storage', error);
     return new Set<string>();
@@ -156,13 +103,6 @@ const saveLookingUsers = (users: Set<string>) => {
     const data = JSON.stringify(usersArray);
     localStorage.setItem(STORAGE_KEYS.LOOKING_USERS, data);
     localStorage.setItem(STORAGE_KEYS.LAST_UPDATE, Date.now().toString());
-    
-    // Update last activity timestamp for each user
-    const currentTime = Date.now().toString();
-    usersArray.forEach(pubkey => {
-      localStorage.setItem(`${KEY_PREFIX}user_activity_${pubkey}`, currentTime);
-    });
-    
     logger.info(`Saved ${usersArray.length} looking users to storage`, { users: usersArray });
   } catch (error) {
     logger.error('Error saving looking users to storage', error);
@@ -216,16 +156,8 @@ const loadEvents = (): NostrEvent[] => {
     }
     
     const parsed = JSON.parse(data) as NostrEvent[];
-    
-    // Filter out expired events (older than 2 minutes)
-    const now = Date.now();
-    const validEvents = parsed.filter(event => {
-      const eventTime = event.created_at * 1000; // Convert to milliseconds
-      return now - eventTime < MATCH_EXPIRY;
-    });
-    
-    logger.info(`Loaded ${validEvents.length} valid events from storage (filtered ${parsed.length - validEvents.length} expired)`);
-    return validEvents;
+    logger.info(`Loaded ${parsed.length} events from storage`);
+    return parsed;
   } catch (error) {
     logger.error('Error loading events from storage', error);
     return [];
@@ -260,25 +192,40 @@ const saveEvent = (event: NostrEvent) => {
 };
 
 // Type for message entries
-type MessageEntry = [string, Record<string, unknown>[]];
+type MessageEntry = [string, any[]];
 
 // Load messages from localStorage
-const loadMessages = (): Map<string, Record<string, unknown>[]> => {
-  if (typeof window === 'undefined') return new Map<string, Record<string, unknown>[]>();
+const loadMessages = (): Map<string, any[]> => {
+  if (typeof window === 'undefined') return new Map<string, any[]>();
   
   try {
     const data = localStorage.getItem(STORAGE_KEYS.MESSAGES);
     if (!data) {
       logger.info('No messages found in storage');
-      return new Map<string, Record<string, unknown>[]>();
+      return new Map<string, any[]>();
     }
     
     const parsed = JSON.parse(data) as MessageEntry[];
     logger.info(`Loaded ${parsed.length} conversation threads from storage`);
-    return new Map<string, Record<string, unknown>[]>(parsed);
+    return new Map<string, any[]>(parsed);
   } catch (error) {
     logger.error('Error loading messages from storage', error);
-    return new Map<string, Record<string, unknown>[]>();
+    return new Map<string, any[]>();
+  }
+};
+
+// Save messages to localStorage
+const saveMessages = (messages: Map<string, any[]>) => {
+  if (typeof window === 'undefined') return;
+  
+  try {
+    const messagesArray = Array.from(messages.entries());
+    const data = JSON.stringify(messagesArray);
+    localStorage.setItem(STORAGE_KEYS.MESSAGES, data);
+    localStorage.setItem(STORAGE_KEYS.LAST_UPDATE, Date.now().toString());
+    logger.info(`Saved ${messagesArray.length} conversation threads to storage`);
+  } catch (error) {
+    logger.error('Error saving messages to storage', error);
   }
 };
 
@@ -286,7 +233,7 @@ const loadMessages = (): Map<string, Record<string, unknown>[]> => {
 interface SharedInstance {
   looking: Set<string>;
   matched: Map<string, string>;
-  messages: Map<string, Record<string, unknown>[]>;
+  messages: Map<string, any[]>;
   lastChecked: number;
 }
 
@@ -300,7 +247,7 @@ const getSharedInstance = (): SharedInstance => {
     return { 
       looking: new Set<string>(), 
       matched: new Map<string, string>(), 
-      messages: new Map<string, Record<string, unknown>[]>(),
+      messages: new Map<string, any[]>(),
       lastChecked: 0
     };
   }
@@ -371,25 +318,14 @@ export const generateKeypair = () => {
   return { privateKey, publicKey };
 };
 
-const broadcastEvent = (type: string, data: Record<string, unknown>) => {
+const broadcastEvent = (type: string, data: any) => {
   if (typeof window === 'undefined' || !broadcastChannel) return;
   
   try {
-    const message = JSON.stringify({
-      type,
-      data,
-      timestamp: Date.now()
-    });
-    
-    broadcastChannel.postMessage(message);
-    
-    // Additionally, update the last update timestamp in localStorage
-    // This helps with cross-browser detection
-    localStorage.setItem(STORAGE_KEYS.LAST_UPDATE, Date.now().toString());
-    
-    logger.debug(`Broadcasted event: ${type}`, data);
+    broadcastChannel.postMessage(JSON.stringify({ type, data }));
+    logger.debug(`Broadcasted ${type} event via BroadcastChannel`);
   } catch (error) {
-    logger.error(`Error broadcasting event: ${type}`, error);
+    logger.error('Error broadcasting event', { error, type });
   }
 };
 
@@ -397,7 +333,7 @@ const broadcastEvent = (type: string, data: Record<string, unknown>) => {
 export const dumpLocalStorage = () => {
   if (typeof window === 'undefined') return null;
   
-  const result: Record<string, unknown> = {};
+  const result: Record<string, any> = {};
   
   // Get all storage items with our prefix
   Object.keys(localStorage).forEach(key => {
@@ -414,140 +350,35 @@ export const dumpLocalStorage = () => {
   return result;
 };
 
-// Expiry time for matchmaking events (2 minutes)
-export const MATCH_EXPIRY = 2 * 60 * 1000; // 2 minutes
-
 // Mock implementation of a relay pool
 export class SimplePool {
   relays: string[] = [];
-  connectedRelays: Set<string> = new Set();
   eventCallbacks: Map<string, ((event: NostrEvent) => void)[]> = new Map();
   polling: boolean = false;
   pollInterval: number = 2000; // Poll every 2 seconds
-  reconnectAttempts: Map<string, number> = new Map();
-  maxReconnectAttempts: number = 5;
   
   constructor() {
-    // Setup polling for events when in browser
+    // If in browser, setup broadcast channel listener
     if (typeof window !== 'undefined') {
-      // Initialize the broadcast channel for cross-browser communication
-      initBroadcastChannel();
-      
-      // Start polling immediately
-      this.startPolling();
-      
-      // Start periodic relay health checks
-      this.startRelayHealthChecks();
-      
-      // Expose the pool reference for diagnostics
-      if (!window._omestrPoolRef) {
-        window._omestrPoolRef = { current: this };
-      }
-    }
-  }
-  
-  // Check if relays are connected and try to reconnect if not
-  private verifyRelayConnections() {
-    // If we have no relays, there's nothing to check
-    if (this.relays.length === 0) return;
-    
-    // Count connected relays
-    const connectedCount = this.connectedRelays.size;
-    const targetCount = Math.ceil(this.relays.length * 0.6); // We want at least 60% of relays connected
-    
-    if (connectedCount < targetCount) {
-      logger.warn(`Only ${connectedCount}/${this.relays.length} relays connected, attempting to reconnect`);
-      
-      // Try to reconnect to all relays that aren't connected
-      this.relays.forEach(relay => {
-        if (!this.connectedRelays.has(relay)) {
-          const attempts = this.reconnectAttempts.get(relay) || 0;
-          
-          if (attempts < this.maxReconnectAttempts) {
-            logger.info(`Attempting to reconnect to relay: ${relay} (attempt ${attempts + 1}/${this.maxReconnectAttempts})`);
+      const bc = initBroadcastChannel();
+      if (bc) {
+        bc.onmessage = (event) => {
+          try {
+            const parsed = JSON.parse(event.data);
+            logger.debug('Received broadcast', { type: parsed.type });
             
-            try {
-              const ws = new WebSocket(relay);
-              
-              ws.onopen = () => {
-                this.connectedRelays.add(relay);
-                this.reconnectAttempts.delete(relay); // Reset attempts on success
-                logger.info(`Successfully reconnected to relay: ${relay}`);
-              };
-              
-              ws.onerror = () => {
-                // Failed to connect, increment attempt counter
-                this.reconnectAttempts.set(relay, attempts + 1);
-                logger.warn(`Failed to reconnect to relay: ${relay}`);
-              };
-            } catch (error) {
-              // Failed to connect, increment attempt counter
-              this.reconnectAttempts.set(relay, attempts + 1);
-              logger.error(`Error reconnecting to ${relay}`, error);
+            if (parsed.type === 'nostr_event') {
+              this.handleNostrEvent(parsed.data);
             }
-          } else {
-            logger.error(`Max reconnect attempts reached for relay: ${relay}, giving up`);
+          } catch (error) {
+            logger.error('Error parsing broadcast message', error);
           }
-        }
-      });
-    }
-  }
-  
-  // Start periodic health checks for relay connections
-  private startRelayHealthChecks() {
-    setInterval(() => {
-      this.verifyRelayConnections();
-    }, 30000); // Check every 30 seconds
-  }
-  
-  // Connect to relays
-  connect(relays: string[]) {
-    this.relays = relays;
-    
-    logger.info('Connecting to relays', { relays });
-    
-    // Connect to relays using WebSockets
-    relays.forEach(relay => {
-      try {
-        const ws = new WebSocket(relay);
-        
-        ws.onopen = () => {
-          this.connectedRelays.add(relay);
-          logger.info(`Connected to relay: ${relay}`);
         };
-        
-        ws.onerror = (e) => {
-          logger.warn(`Failed to connect to relay: ${relay}`, e);
-        };
-        
-        ws.onclose = () => {
-          this.connectedRelays.delete(relay);
-          logger.info(`Disconnected from relay: ${relay}`);
-        };
-      } catch (error) {
-        logger.error(`Error connecting to ${relay}`, error);
       }
-    });
-    
-    logger.info('Initiated connections to relays', { 
-      relays,
-      totalRelays: relays.length
-    });
-    
-    return this;
-  }
-  
-  // Disconnect from all relays
-  disconnect() {
-    logger.info('Disconnecting from all relays');
-    
-    // Clear connected relays set
-    this.connectedRelays.clear();
-    
-    // Reset reconnect attempts
-    this.reconnectAttempts.clear();
-    
-    return this;
+      
+      // Start polling for updates from localStorage
+      this.startPolling();
+    }
   }
   
   // Start polling for updates from other browsers
@@ -573,12 +404,6 @@ export class SimplePool {
         }
       });
       
-      // Periodically force sync state even without updates
-      const shared = getSharedInstance();
-      if (shared.looking.size > 0) {
-        logger.debug(`Periodic sync: ${shared.looking.size} looking users available`);
-      }
-      
       setTimeout(poll, this.pollInterval);
     };
     
@@ -598,194 +423,130 @@ export class SimplePool {
       pubkey: event.pubkey.substring(0, 8),
       kind: event.kind 
     });
-    
-    // Skip expired events
-    const eventTime = event.created_at * 1000; // Convert to milliseconds
-    if (Date.now() - eventTime > MATCH_EXPIRY) {
-      logger.debug(`Skipping expired event from ${event.pubkey.substring(0, 8)}`, {
-        age: Math.floor((Date.now() - eventTime) / 1000) + ' seconds'
-      });
-      return;
-    }
-    
-    // Broadcast to all subscribers
     this.broadcastEvent(event);
-    
-    // Special handling for matchmaking events
-    if (event.kind === OMESTR_KIND) {
-      // Extract status from tags
-      const statusTag = event.tags.find(tag => tag[0] === 'status');
-      const status = statusTag ? statusTag[1] : '';
-      
-      // Get browser instance ID to avoid duplicate handling
-      const browserIdTag = event.tags.find(tag => tag[0] === 'browser_id');
-      const browserInstanceId = browserIdTag ? browserIdTag[1] : '';
-      
-      // Store the browser instance ID for this pubkey - this helps with matching logic
-      if (browserInstanceId && typeof window !== 'undefined') {
-        localStorage.setItem(`omestr_browser_${event.pubkey}`, browserInstanceId);
-      }
-      
-      // Handle 'looking' events
-      if (status === 'looking') {
-        const shared = getSharedInstance();
-        
-        // Add the user to looking users if not already there
-        if (!shared.looking.has(event.pubkey)) {
-          logger.info(`Adding ${event.pubkey.substring(0, 8)} to looking users`);
-          shared.looking.add(event.pubkey);
-          saveLookingUsers(shared.looking);
-        }
-        
-        // Update user activity timestamp
-        if (typeof window !== 'undefined') {
-          localStorage.setItem(`${KEY_PREFIX}user_activity_${event.pubkey}`, Date.now().toString());
-        }
-      }
-      
-      // Handle 'matched' events
-      if (status === 'matched') {
-        // Extract target pubkey for matched events
-        const targetTag = event.tags.find(tag => tag[0] === 'p');
-        const targetPubkey = targetTag ? targetTag[1] : null;
-        
-        if (targetPubkey) {
-          logger.info(`Processing match between ${event.pubkey.substring(0, 8)} and ${targetPubkey.substring(0, 8)}`);
-          
-          // Make sure the match is registered in shared instance
-          const shared = getSharedInstance();
-          if (!shared.matched.has(event.pubkey)) {
-            shared.matched.set(event.pubkey, targetPubkey);
-            saveMatchedUsers(shared.matched);
-            
-            // Remove both users from looking
-            shared.looking.delete(event.pubkey);
-            shared.looking.delete(targetPubkey);
-            saveLookingUsers(shared.looking);
-          }
-        }
-      }
-    }
   }
   
-  // Publish an event to all connected relays with retry
+  // Connect to relays
+  connect(relays: string[]) {
+    this.relays = relays;
+    logger.info('Connected to relays', { relays });
+    return this;
+  }
+  
+  // Publish an event to relays
   async publish(relays: string[], event: NostrEvent) {
-    // Store the event locally for other browser tabs to see
-    saveEvent(event);
-    
-    // Broadcast the event to all subscription callbacks
-    this.broadcastEvent(event);
-    
-    // CRITICAL FIX: Force broadcast to ALL relays regardless of connection status
-    // This ensures events propagate even if relay connections aren't fully established
-    DEFAULT_RELAYS.forEach(relay => {
-      try {
-        const ws = new WebSocket(relay);
-        ws.onopen = () => {
-          try {
-            // Format as proper Nostr relay message
-            ws.send(JSON.stringify(["EVENT", event]));
-            logger.debug(`Force-sent event to ${relay}`);
-            
-            // Add relay to connected set if not already there
-            if (!this.connectedRelays.has(relay)) {
-              this.connectedRelays.add(relay);
-              logger.info(`Added ${relay} to connected relays via force-send`);
-            }
-            
-            // Close after sending
-            setTimeout(() => ws.close(), 500);
-          } catch (err) {
-            logger.error(`Error sending event to ${relay}`, err);
-            ws.close();
-          }
-        };
-        ws.onerror = () => {
-          logger.warn(`Failed to force-send to ${relay}`);
-          ws.close();
-        };
-      } catch (err) {
-        logger.error(`Error creating WebSocket for ${relay}`, err);
-      }
+    logger.info(`Publishing event kind ${event.kind}`, { 
+      id: event.id.substring(0, 8),
+      kind: event.kind,
+      relays: relays.length
     });
     
-    // Set up retry logic
-    const maxRetries = 3;
-    let retryCount = 0;
-    let publishSuccess = false;
+    // Get the shared instance for communication
+    const shared = getSharedInstance();
     
-    while (retryCount <= maxRetries && !publishSuccess) {
-      // Get current connected relays count
-      const connectedRelaysCount = this.connectedRelays.size;
-      
-      if (connectedRelaysCount > 0) {
-        try {
-          // In a real implementation, this would publish to actual WebSockets
-          // For this simulation, we'll log it and store it
-          logger.info(`Publishing event to ${connectedRelaysCount} relays (attempt ${retryCount + 1}/${maxRetries + 1})`, { 
-            id: event.id.substring(0, 8), 
-            kind: event.kind,
-            tags: event.tags
+    // Extract info from the event
+    const statusTag = event.tags.find((tag: string[]) => tag[0] === 'status');
+    const status = statusTag ? statusTag[1] : '';
+    const sessionTag = event.tags.find((tag: string[]) => tag[0] === 'session');
+    const sessionId = sessionTag ? sessionTag[1] : '';
+    
+    // Handle the event based on its kind and status
+    if (event.kind === OMESTR_KIND) {
+      if (status === 'looking') {
+        logger.info(`User ${event.pubkey.substring(0, 8)} is looking for a match`, {
+          sessionId,
+          pubkey: event.pubkey
+        });
+        
+        // Add to the list of looking users
+        shared.looking.add(event.pubkey);
+        saveLookingUsers(shared.looking);
+        
+        // Save the event for other browsers to find
+        saveEvent(event);
+        
+        // Check for other looking users to match with
+        const lookingUsers = Array.from(shared.looking).filter(pk => pk !== event.pubkey);
+        logger.info(`Found ${lookingUsers.length} other looking users`);
+        
+        if (lookingUsers.length > 0) {
+          // Log all looking users
+          lookingUsers.forEach(pk => {
+            logger.debug(`Looking user: ${pk.substring(0, 8)}...`);
+          });
+        }
+      } else if (status === 'matched') {
+        // Extract the matched pubkey
+        const matchedTag = event.tags.find((tag: string[]) => tag[0] === 'p');
+        const matchedPubkey = matchedTag ? matchedTag[1] : null;
+        
+        if (matchedPubkey) {
+          logger.info(`User ${event.pubkey.substring(0, 8)} matched with ${matchedPubkey.substring(0, 8)}`, {
+            sessionId,
+            pubkey: event.pubkey,
+            matchedPubkey
           });
           
-          // Simulate successful publish
-          publishSuccess = true;
+          // Record the match
+          shared.matched.set(event.pubkey, matchedPubkey);
+          saveMatchedUsers(shared.matched);
           
-          // If this is a matchmaking event, store it more persistently for discovery
-          if (event.kind === OMESTR_KIND) {
-            // Store in localStorage for better cross-browser visibility
-            const statusTag = event.tags.find(tag => tag[0] === 'status');
-            if (statusTag && statusTag[1] === 'looking') {
-              // Store this pubkey in the looking users list for broader discovery
-              try {
-                const lookingUsersKey = 'omestr_global_looking_users';
-                const existingData = localStorage.getItem(lookingUsersKey) || '[]';
-                const lookingUsers = JSON.parse(existingData) as string[];
-                
-                // Add the pubkey if it's not already there
-                if (!lookingUsers.includes(event.pubkey)) {
-                  lookingUsers.push(event.pubkey);
-                  localStorage.setItem(lookingUsersKey, JSON.stringify(lookingUsers));
-                  logger.info(`Added pubkey to looking users: ${event.pubkey.substring(0, 8)}`);
-                }
-                
-                // Mark this user as active
-                localStorage.setItem(`${KEY_PREFIX}user_activity_${event.pubkey}`, Date.now().toString());
-              } catch (e) {
-                logger.error('Error updating looking users in localStorage', e);
-              }
-            }
-          }
-        } catch (error) {
-          logger.error(`Error publishing (attempt ${retryCount + 1}/${maxRetries + 1})`, error);
-          retryCount++;
+          // Save the event for other browsers to find
+          saveEvent(event);
           
-          // Wait with exponential backoff before retrying
-          if (retryCount <= maxRetries) {
-            const backoffTime = Math.min(1000 * Math.pow(2, retryCount), 8000);
-            logger.info(`Retrying publish in ${backoffTime}ms...`);
-            await new Promise(resolve => setTimeout(resolve, backoffTime));
-          }
+          // Remove both from the looking list
+          shared.looking.delete(event.pubkey);
+          shared.looking.delete(matchedPubkey);
+          saveLookingUsers(shared.looking);
         }
-      } else {
-        logger.error(`No connected relays for publish attempt ${retryCount + 1}`);
-        retryCount++;
+      }
+    } else if (event.kind === 4) { // Chat message
+      // Store the message
+      const pTag = event.tags.find((tag: string[]) => tag[0] === 'p');
+      const recipientPubkey = pTag ? pTag[1] : null;
+      
+      if (recipientPubkey && sessionId) {
+        logger.info(`Chat message from ${event.pubkey.substring(0, 8)} to ${recipientPubkey.substring(0, 8)}`, {
+          sessionId,
+          content: event.content.substring(0, 20) + (event.content.length > 20 ? '...' : '')
+        });
         
-        if (retryCount <= maxRetries) {
-          // Wait before retrying
-          await new Promise(resolve => setTimeout(resolve, 1000));
-          
-          // Try to connect to relays again
-          this.connect(relays);
-          
-          // Give relays time to connect
-          await new Promise(resolve => setTimeout(resolve, 2000));
+        const messageKey = `${event.pubkey}:${recipientPubkey}:${sessionId}`;
+        const reverseKey = `${recipientPubkey}:${event.pubkey}:${sessionId}`;
+        
+        // Store the message in both directions for easy lookup
+        if (!shared.messages.has(messageKey)) {
+          shared.messages.set(messageKey, []);
         }
+        if (!shared.messages.has(reverseKey)) {
+          shared.messages.set(reverseKey, []);
+        }
+        
+        const messagesList = shared.messages.get(messageKey);
+        const reverseList = shared.messages.get(reverseKey);
+        
+        if (messagesList) messagesList.push(event);
+        if (reverseList) reverseList.push(event);
+        
+        saveMessages(shared.messages);
+        
+        // Save the event for other browsers to find
+        saveEvent(event);
       }
     }
     
-    // Final result
-    return publishSuccess;
+    // Broadcast the event to other browser tabs
+    broadcastEvent('nostr_event', event);
+    
+    // In a real implementation, this would send the event to the relays
+    // For this demo, we'll just simulate it with a timeout and broadcast locally
+    return new Promise<string>(resolve => {
+      setTimeout(() => {
+        // Simulate the event being published and broadcast locally to subscribers
+        this.broadcastEvent(event);
+        resolve('OK');
+      }, 300);
+    });
   }
   
   // Subscribe to events matching a filter
@@ -814,93 +575,20 @@ export class SimplePool {
         if (filter.kinds?.includes(OMESTR_KIND)) {
           logger.info(`Looking for matchmaking events, found ${shared.looking.size} looking users`);
           
-          // Extract our pubkey if it's in the filter
-          const ourPubkey = filter['#p']?.[0] || '';
-          const browserInstanceId = getBrowserInstanceId();
-          
           // Send all looking events
           for (const pubkey of shared.looking) {
-            // Skip our own looking events or those from the same browser
-            if (pubkey === ourPubkey) continue;
-            
-            logger.info(`Broadcasting looking user event: ${pubkey.substring(0, 8)}...`);
+            logger.debug(`Found looking user: ${pubkey.substring(0, 8)}...`);
             const event: NostrEvent = {
               id: generateRandomString(64),
               kind: OMESTR_KIND,
               created_at: Math.floor(Date.now() / 1000),
-              tags: [
-                ['status', 'looking'], 
-                ['session', generateRandomString(12)], 
-                ['browser_id', browserInstanceId]
-              ],
+              tags: [['status', 'looking'], ['session', generateRandomString(12)]],
               content: '',
               pubkey,
               sig: generateRandomString(64),
             };
             
-            // Only send to callbacks, don't do internal processing
             callbacks.forEach(callback => callback(event));
-          }
-          
-          // Check matched pairs too
-          const matchPairs = Array.from(shared.matched.entries());
-          if (matchPairs.length > 0) {
-            logger.info(`Found ${matchPairs.length} matched pairs`);
-            
-            // Send matched events that are relevant to this subscription
-            for (const [pubkey1, pubkey2] of matchPairs) {
-              // Only send if our pubkey is one of the matched ones
-              if (ourPubkey && (pubkey1 === ourPubkey || pubkey2 === ourPubkey)) {
-                const partnerPubkey = pubkey1 === ourPubkey ? pubkey2 : pubkey1;
-                const chatSessionId = generateRandomString(16);
-                
-                logger.info(`Broadcasting matched event between ${pubkey1.substring(0, 8)} and ${pubkey2.substring(0, 8)}`);
-                
-                const matchEvent: NostrEvent = {
-                  id: generateRandomString(64),
-                  kind: OMESTR_KIND,
-                  created_at: Math.floor(Date.now() / 1000),
-                  tags: [
-                    ['status', 'matched'], 
-                    ['session', generateRandomString(12)],
-                    ['p', partnerPubkey],
-                    ['chat_session', chatSessionId],
-                    ['browser_id', browserInstanceId]
-                  ],
-                  content: '',
-                  pubkey: ourPubkey,
-                  sig: generateRandomString(64),
-                };
-                
-                callbacks.forEach(callback => callback(matchEvent));
-              }
-            }
-          }
-          
-          // Force all looking users to broadcast their availability more often
-          if (shared.looking.size > 5 && shared.matched.size === 0) {
-            logger.warn(`Multiple looking users (${shared.looking.size}) but no matches - forcing broadcast`);
-            
-            // Immediately broadcast all looking users to all active subscriptions
-            for (const pubkey of shared.looking) {
-              // Create an event for each user
-              const lookingEvent: NostrEvent = {
-                id: generateRandomString(64),
-                kind: OMESTR_KIND,
-                created_at: Math.floor(Date.now() / 1000),
-                tags: [
-                  ['status', 'looking'], 
-                  ['session', generateRandomString(12)],
-                  ['browser_id', browserInstanceId]
-                ],
-                content: '',
-                pubkey,
-                sig: generateRandomString(64),
-              };
-              
-              // Broadcast to ALL subscriptions to maximize visibility
-              this.broadcastEvent(lookingEvent);
-            }
           }
         }
         
@@ -922,8 +610,7 @@ export class SimplePool {
             
             // Send all existing messages
             for (const message of messages) {
-              // Cast message to NostrEvent
-              callbacks.forEach(callback => callback(message as unknown as NostrEvent));
+              callbacks.forEach(callback => callback(message));
             }
           }
         }
@@ -983,19 +670,11 @@ export const publishMatchmakingEvent = async (
   sessionId: string,
   status: 'looking' | 'matched',
   matchedPubkey?: string,
-  browserInstanceId?: string,
-  chatSessionId?: string
+  browserInstanceId?: string
 ) => {
-  // Ensure sessionId is never empty
-  const validSessionId = sessionId || generateRandomString(12);
-  if (!sessionId) {
-    logger.warn('Generated new session ID for matchmaking', { validSessionId });
-  }
-  
   const tags = [
     ['status', status],
-    ['session', validSessionId],
-    ['expiry', (Date.now() + MATCH_EXPIRY).toString()], // Add expiry timestamp
+    ['session', sessionId],
   ];
 
   if (matchedPubkey) {
@@ -1005,14 +684,6 @@ export const publishMatchmakingEvent = async (
   // Add browser instance ID to identify different browser sessions
   if (browserInstanceId) {
     tags.push(['browser_id', browserInstanceId]);
-  } else {
-    // Always include browser instance ID
-    tags.push(['browser_id', getBrowserInstanceId()]);
-  }
-  
-  // Add chat session ID for matched status
-  if (chatSessionId && status === 'matched') {
-    tags.push(['chat_session', chatSessionId]);
   }
 
   const event: NostrEvent = {
@@ -1027,11 +698,10 @@ export const publishMatchmakingEvent = async (
 
   try {
     logger.info(`Publishing matchmaking event: ${status}`, {
-      sessionId: validSessionId,
+      sessionId,
       publicKey: publicKey.substring(0, 8),
       matched: matchedPubkey ? matchedPubkey.substring(0, 8) : undefined,
-      browserId: browserInstanceId || getBrowserInstanceId(),
-      chatSessionId
+      browserId: browserInstanceId
     });
     return await pool.publish(DEFAULT_RELAYS, event);
   } catch (error) {
@@ -1125,88 +795,4 @@ export const subscribeToChatMessages = (
   const sub = pool.sub(DEFAULT_RELAYS, [filter]);
   sub.on('event', onEvent);
   return sub;
-};
-
-// Generate a unique browser instance ID to differentiate between browser sessions
-const getBrowserInstanceId = (): string => {
-  if (typeof window === 'undefined') return '';
-  
-  const storageKey = 'omestr_browser_instance_id';
-  let instanceId = sessionStorage.getItem(storageKey);
-  
-  if (!instanceId) {
-    // Add browser fingerprinting elements to make IDs more unique across browsers
-    const browserFingerprint = navigator.userAgent + 
-      '-' + window.screen.width + 
-      '-' + window.screen.height + 
-      '-' + new Date().getTimezoneOffset() +
-      '-' + navigator.language;
-      
-    // Generate unique ID based on fingerprint and random string
-    instanceId = generateRandomString(8) + '-' + 
-      browserFingerprint.split('').reduce((a, b) => {
-        return a + b.charCodeAt(0);
-      }, 0).toString(16);
-      
-    sessionStorage.setItem(storageKey, instanceId);
-    logger.info('Generated new browser instance ID', { instanceId });
-  }
-  
-  return instanceId;
-};
-
-// Clear storage for debugging and reset
-export const clearStorage = () => {
-  if (typeof window === 'undefined') return;
-  
-  logger.info('Clearing all storage data for Omestr');
-  
-  try {
-    // Clear all localStorage items with our prefix
-    const keys = Object.keys(localStorage);
-    for (const key of keys) {
-      if (key.startsWith('omestr_') || key.startsWith(KEY_PREFIX)) {
-        localStorage.removeItem(key);
-      }
-    }
-    
-    // Specifically clear all browser ID associations
-    for (const key of keys) {
-      if (key.startsWith('omestr_browser_')) {
-        localStorage.removeItem(key);
-      }
-    }
-    
-    // Reset the shared instance
-    if (sharedInstance) {
-      sharedInstance.looking = new Set<string>();
-      sharedInstance.matched = new Map<string, string>();
-      sharedInstance.messages = new Map<string, Record<string, unknown>[]>();
-      sharedInstance.lastChecked = Date.now();
-    }
-    
-    // Store empty arrays for consistent state
-    localStorage.setItem(STORAGE_KEYS.LOOKING_USERS, JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEYS.MATCHED_USERS, JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEYS.MESSAGES, JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEYS.EVENTS, JSON.stringify([]));
-    localStorage.setItem(STORAGE_KEYS.LAST_UPDATE, Date.now().toString());
-    
-    // Clear sessionStorage items related to browser instance IDs
-    sessionStorage.removeItem('omestr_browser_instance_id');
-    
-    // Broadcast the clear event to other tabs
-    if (broadcastChannel) {
-      broadcastChannel.postMessage(JSON.stringify({ 
-        type: 'storage_cleared', 
-        timestamp: Date.now() 
-      }));
-    }
-    
-    logger.info('Storage cleared successfully');
-  } catch (error) {
-    logger.error('Error clearing storage', error);
-  }
-  
-  return true;
 }; 
