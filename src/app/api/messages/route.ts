@@ -56,7 +56,7 @@ export async function POST(request: Request) {
     // Clean up old messages
     cleanupOldMessages();
     
-    // Create a new message
+    // Create a single message entry
     const message: ChatMessage = {
       id,
       content,
@@ -67,7 +67,7 @@ export async function POST(request: Request) {
     };
     
     // Store the message
-    messages.push(message);
+    messages.push(message);    
     console.log(`[Messages API] Added message to store. Total messages: ${messages.length}`);
     
     // Return success
@@ -108,22 +108,12 @@ export async function GET(request: Request) {
       );
     }
     
-    // Find messages where this user is the receiver OR sender
-    let userMessages = messages.filter(message => 
-      message.receiverId === userId || message.senderId === userId
-    );
-    console.log(`[Messages API] Found ${userMessages.length} messages where user is sender or receiver`);
-    
-    // If chatSessionId is provided, filter messages by chatSessionId
-    if (chatSessionId) {
-      const beforeFilter = userMessages.length;
-      userMessages = userMessages.filter(message => 
-        message.chatSessionId === chatSessionId
-      );
-      console.log(`[Messages API] After filtering by chatSessionId (${chatSessionId}), ${userMessages.length} messages remain (from ${beforeFilter})`);
-    } else {
-      console.warn('[Messages API] No chatSessionId provided, this may cause messages to be mixed between chats');
-    }
+    // Find messages for this chat session
+    let userMessages = chatSessionId 
+      ? messages.filter(message => message.chatSessionId === chatSessionId)
+      : messages.filter(message => message.receiverId === userId || message.senderId === userId);
+      
+    console.log(`[Messages API] Found ${userMessages.length} messages in the specified chat session`);
     
     // If after timestamp is provided, only return messages after that time
     if (after) {

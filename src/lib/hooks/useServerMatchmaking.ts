@@ -131,6 +131,35 @@ export function useServerMatchmaking() {
     }
   }, []);
   
+  // Format the chat duration as MM:SS
+  const formattedDuration = useCallback(() => {
+    const minutes = Math.floor(chatDuration / 60);
+    const seconds = chatDuration % 60;
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  }, [chatDuration]);
+  
+  // Start the chat duration timer
+  const startTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+    }
+    
+    setChatDuration(0);
+    
+    // Update timer every second
+    timerRef.current = setInterval(() => {
+      setChatDuration(prev => prev + 1);
+    }, 1000);
+  }, []);
+  
+  // Stop the chat duration timer
+  const stopTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+  
   // Start polling for messages - define the implementation function
   const startPollingForMessagesImpl = useCallback(() => {
     // Clear any existing interval
@@ -419,20 +448,19 @@ export function useServerMatchmaking() {
             chatSessionId: response.match.chatSessionId
           });
           
-          if (!response.match.chatSessionId) {
-            logger.warn('Immediate match found but no chatSessionId was provided', {
-              matchId: response.match.id
+          // Create a new chat session ID if one wasn't provided
+          let chatSessionIdToUse = response.match.chatSessionId;
+          
+          if (!chatSessionIdToUse) {
+            // Generate a new chat session ID
+            chatSessionIdToUse = generateRandomString(16);
+            logger.info('Generated new chat session ID for immediate match', { 
+              chatSessionId: chatSessionIdToUse
             });
-            
-            // Try to create a session ID if none was provided
-            const tempSessionId = generateRandomString(16);
-            logger.info('Generated temporary session ID for match', { 
-              tempSessionId,
-              matchId: response.match.id
-            });
-            
-            response.match.chatSessionId = tempSessionId;
           }
+          
+          // Important: Update the match object with the chat session ID
+          response.match.chatSessionId = chatSessionIdToUse;
           
           // Update our status to matched with the session ID
           const updateResponse = await registerLookingUser(
@@ -441,7 +469,7 @@ export function useServerMatchmaking() {
             sessionId,
             browserId,
             'matched',
-            response.match.chatSessionId
+            chatSessionIdToUse
           );
           
           if (!updateResponse.success) {
@@ -454,11 +482,31 @@ export function useServerMatchmaking() {
           setPartner(response.match);
           setStatus('connected');
           
+          // Start the chat timer
+          startTimer();
+          
+          // Check for matches one more time to ensure both users have the chat session ID
+          // This is important to synchronize the connection status between the two users
+          setTimeout(async () => {
+            try {
+              const matchCheckResponse = await checkForMatch(userId, browserId);
+              if (matchCheckResponse.success && matchCheckResponse.match) {
+                // Update partner with any additional info from the server
+                setPartner(prev => ({
+                  ...prev!,
+                  ...matchCheckResponse.match!
+                }));
+                
+                // Start polling for messages
+                startPollingForMessagesRef.current?.();
+              }
+            } catch (error) {
+              logger.error('Error in delayed match check', error);
+            }
+          }, 500);
+          
           // Start polling for messages
-          const interval = startPollingForMessages();
-          if (!interval) {
-            logger.warn('Failed to start message polling after immediate match');
-          }
+          startPollingForMessagesRef.current?.();
           
           return;
         }
@@ -477,7 +525,7 @@ export function useServerMatchmaking() {
       setError('Critical error occurred. Please refresh and try again.');
       setStatus('disconnected');
     }
-  }, [userId, pubkey, sessionId, browserId, keysGenerated, initialize, stopPollingForMessages]);
+  }, [userId, pubkey, sessionId, browserId, keysGenerated, initialize, stopPollingForMessages, startTimer]);
   
   // Start polling for matches
   const startPollingForMatches = useCallback(() => {
@@ -486,90 +534,182 @@ export function useServerMatchmaking() {
       clearInterval(matchCheckInterval.current);
     }
     
-    // Set up polling interval
-    matchCheckInterval.current = setInterval(async () => {
+    // Store current values to use in interval callback
+    const currentUserId = userId;
+    const currentBrowserId = browserId;
+    
+    logger.info('Starting to poll for matches', { 
+      userId: currentUserId, 
+      browserId: currentBrowserId
+    });
+    
+    const checkMatchFn = async () => {
       if (status !== 'looking') {
-        logger.info('No longer in looking state, stopping match polling', {
-          currentStatus: status
+        logger.debug('Not checking for matches because status is not looking', {
+          status
         });
-        stopPollingForMatches();
         return;
       }
       
-      // If we already have a partner, don't look for another one
-      if (partner) {
-        logger.info('Already have a partner, stopping match polling', {
-          partnerId: partner.id.substring(0, 8)
-        });
-        stopPollingForMatches();
-        return;
-      }
+      logger.debug('Checking for match', { 
+        userId: currentUserId,
+        timestamp: new Date().toISOString()
+      });
       
       try {
-        const response = await checkForMatch(userId, browserId);
+        const response = await checkForMatch(currentUserId, currentBrowserId);
         
         if (!response.success) {
-          logger.warn('Failed to check for matches', { error: response.error });
+          logger.warn('Failed to check for match', { error: response.error });
           return;
         }
         
-        // If we found a match, connect to them
+        // If we have a match, update state
         if (response.match) {
-          logger.info('Found a match while polling', { 
-            matchId: response.match.id,
-            matchPubkey: response.match.pubkey.substring(0, 8),
+          logger.info('Match found from polling', { 
+            match: {
+              id: response.match.id.substring(0, 8),
+              pubkey: response.match.pubkey.substring(0, 8)
+            },
             chatSessionId: response.match.chatSessionId
           });
           
+          // Update state with the match
+          setPartner(response.match);
+          setStatus('connected');
+          
+          // Start the chat timer
+          startTimer();
+          
+          // Create a chat session ID if we don't have one
           if (!response.match.chatSessionId) {
-            logger.warn('Match found but no chatSessionId was provided', {
+            logger.error('Match found but no chatSessionId was provided', {
               matchId: response.match.id
             });
             
-            // Generate a chat session ID if not provided
-            response.match.chatSessionId = generateRandomString(16);
-            logger.info('Generated chat session ID for match', {
-              chatSessionId: response.match.chatSessionId
+            // Generate a new chat session ID
+            const newChatSessionId = generateRandomString(16);
+            logger.info('Generated new chat session ID', { 
+              chatSessionId: newChatSessionId 
             });
+            
+            // Register the user again with the new chat session ID to update the match
+            // This ensures both users have the same chat session ID
+            await registerLookingUser(
+              currentUserId,
+              pubkey,
+              sessionId,
+              currentBrowserId,
+              'matched',
+              newChatSessionId
+            );
           }
           
-          // Stop polling for matches
-          stopPollingForMatches();
+          // Start polling for messages
+          startPollingForMessagesRef.current?.();
           
-          // Update our status to matched
-          const updateResult = await registerLookingUser(
+          // Since we found a match, stop polling for more matches
+          clearInterval(matchCheckInterval.current!);
+          matchCheckInterval.current = null;
+        }
+      } catch (error) {
+        logger.error('Error checking for match', error);
+      }
+    };
+    
+    // Check immediately first, then set up the interval
+    checkMatchFn();
+    
+    // Set up polling interval
+    matchCheckInterval.current = setInterval(checkMatchFn, MATCH_POLL_INTERVAL);
+    
+    return matchCheckInterval.current;
+  }, [userId, sessionId, pubkey, status, browserId, startTimer]);
+  
+  // Register the user as looking for a match
+  const registerAsLooking = useCallback(async () => {
+    if (!userId || !keysGenerated) {
+      logger.error('Cannot register as looking - missing userId or keys');
+      return;
+    }
+    
+    logger.info('Registering as looking for chat', { 
+      userId, 
+      pubkey: pubkey.substring(0, 8),
+      sessionId,
+      browserId
+    });
+    
+    try {
+      const response = await registerLookingUser(userId, pubkey, sessionId, browserId);
+      
+      if (!response.success) {
+        logger.error('Failed to register as looking', { error: response.error });
+        setError(response.error || 'Failed to register as looking');
+        return;
+      }
+      
+      // If we already have a match from registration, update state immediately
+      if (response.match) {
+        logger.info('Match found from registration', { 
+          match: {
+            id: response.match.id.substring(0, 8),
+            pubkey: response.match.pubkey.substring(0, 8)
+          },
+          chatSessionId: response.match.chatSessionId
+        });
+        
+        // Update state with the match
+        setPartner(response.match);
+        setStatus('connected');
+        
+        // Start the chat timer
+        startTimer();
+        
+        // If we have a chat session ID, start polling for messages immediately
+        if (response.match.chatSessionId) {
+          startPollingForMessagesRef.current?.();
+        } else {
+          // Create a new chat session ID if needed
+          logger.error('Match found but no chatSessionId was provided', {
+            matchId: response.match.id
+          });
+          
+          // Generate a new chat session ID
+          const newChatSessionId = generateRandomString(16);
+          logger.info('Generated new chat session ID', { 
+            chatSessionId: newChatSessionId 
+          });
+          
+          // Register again with chat session ID
+          const updateResponse = await registerLookingUser(
             userId,
             pubkey,
             sessionId,
             browserId,
             'matched',
-            response.match.chatSessionId
+            newChatSessionId
           );
           
-          if (!updateResult.success) {
-            logger.warn('Failed to update status to matched', {
-              error: updateResult.error
+          if (updateResponse.success) {
+            // Immediately check for match again to ensure both users have the chat session ID
+            checkForMatch(userId, browserId).then(matchCheckResponse => {
+              if (matchCheckResponse.success && matchCheckResponse.match) {
+                setPartner(matchCheckResponse.match);
+                startPollingForMessagesRef.current?.();
+              }
             });
           }
-          
-          // Set status and partner
-          setPartner(response.match);
-          setStatus('connected');
-          
-          // Start polling for messages AFTER we've updated our status
-          startPollingForMessages();
         }
-        
-        // Log stats for debugging
-        logger.debug('Match check stats', { 
-          userCount: response.userCount,
-          otherUsers: response.otherUsers?.length || 0
-        });
-      } catch (err) {
-        logger.error('Error checking for matches', err);
+      } else {
+        // Start polling for matches
+        startPollingForMatches();
       }
-    }, MATCH_POLL_INTERVAL);
-  }, [userId, pubkey, sessionId, browserId, status, partner]);
+    } catch (error) {
+      logger.error('Error registering as looking', error);
+      setError('Failed to register as looking');
+    }
+  }, [userId, pubkey, sessionId, browserId, keysGenerated, startPollingForMatches, startTimer]);
   
   // Send a chat message
   const sendMessage = useCallback(async (message: string) => {
@@ -653,38 +793,6 @@ export function useServerMatchmaking() {
     }
   }, [partner, userId, status]);
   
-  // Format timer for display (00:00 format)
-  const formattedDuration = useCallback(() => {
-    const minutes = Math.floor(chatDuration / 60);
-    const seconds = chatDuration % 60;
-    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-  }, [chatDuration]);
-
-  // Start timer function
-  const startTimer = useCallback(() => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-    }
-    
-    setChatDuration(0);
-    
-    timerRef.current = setInterval(() => {
-      setChatDuration(prev => prev + 1);
-    }, 1000);
-    
-    logger.info('Started chat timer');
-  }, []);
-
-  // Stop timer function
-  const stopTimer = useCallback(() => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-      
-      logger.info('Stopped chat timer');
-    }
-  }, []);
-
   // Start/stop timer based on connection status
   useEffect(() => {
     if (status === 'connected') {
