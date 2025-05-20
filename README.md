@@ -31,7 +31,7 @@ Omestr is a decentralized, anonymous chat application built on the Nostr protoco
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/omestr.git
+   git clone https://github.com/imshrishk/omestr.git
    cd omestr
    ```
 
@@ -58,12 +58,8 @@ Omestr is a decentralized, anonymous chat application built on the Nostr protoco
 3. **Matching**: When another user is also looking, you're matched together.
 4. **Chatting**: Chat messages are sent via Nostr relays between matched users.
 5. **Next**: Click "Next" to end the current chat and find a new partner.
-
-## Deployment
-
-The app can be deployed to Vercel with a single click:
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fyourusername%2Fomestr)
+(Currently there's an issue with messaging and messages might appear not in order and some might even not be received
+While matchmaking, if you already have multiple instnaces open just try refresh or clear data from debug)
 
 ## Contributing
 
@@ -87,4 +83,4 @@ The application uses sound notifications for various events. You'll need to add 
 - `connect.mp3`: Played when connecting with a new partner
 - `disconnect.mp3`: Played when disconnecting from a chat
 
-You can use any MP3 files of your choice, just make sure they're short and appropriate for notifications.
+You can use any MP3 files of your choice, just make sure they're short and appropriate for notifications.(not added yet)
