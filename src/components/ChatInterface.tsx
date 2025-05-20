@@ -358,18 +358,18 @@ export default function ChatInterface() {
               <p className="font-semibold mb-2 text-purple-400">How to test Omestr:</p>
               <ol className="text-left list-decimal pl-6 space-y-2">
                 <li>Keep this window open</li>
-                <li>Open another browser (Chrome, Firefox, Edge, etc. - not just a new tab)</li>
-                <li>Navigate to <span className="text-blue-400">http://localhost:3000</span> in the other browser</li>
+                <li>Open another browser (Chrome, Firefox, Edge, Brave etc. - not just a new tab)</li>
+                <li>Navigate to <span className="text-blue-400">https://omestr.vercel.app</span> in the other browser</li>
                 <li>The two instances should connect automatically</li>
                 <li>Try sending messages between browsers!</li>
               </ol>
               <p className="mt-4 text-xs text-gray-500">
-                We&apos;re using server-side matchmaking to connect users
+                We&apos;re using the Nostr protocol and decentralized relays to connect users
               </p>
               <div className="mt-4 p-2 bg-gray-700 rounded-md">
                 <p className="text-xs text-yellow-300">
-                  Note: If you&apos;re using private/incognito mode in one browser, matchmaking will still work
-                  since we&apos;re using server-side matchmaking.
+                  Note: All messages are encrypted end-to-end using the Nostr protocol (NIP-04),
+                  and communications happen through decentralized relays rather than a central server.
                 </p>
               </div>
               <div className="mt-4 p-2 bg-gray-700 rounded-md">
@@ -385,7 +385,7 @@ export default function ChatInterface() {
                 <ol className="text-left list-decimal pl-4 text-xs text-red-300">
                   <li>Click the &quot;Debug&quot; button in the top right</li>
                   <li>Click &quot;Reset All Data and Restart&quot; in <strong>all browser windows</strong></li>
-                  <li>Try again - each browser needs a unique identity</li>
+                  <li>Try again - each browser needs a unique identity(Can also use Ctrl+Shift+R)</li>
                 </ol>
               </div>
             </div>
